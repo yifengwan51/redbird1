@@ -616,11 +616,136 @@ def events(video_id: str, analyze_if_missing: bool = False) -> list[dict[str, An
     return cached.get("events", [])
 
 
+def _clock(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    return f"{int(seconds // 60):02d}:{int(seconds % 60):02d}"
+
+
+def _filter_path(path: Path) -> str:
+    return str(path).replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+
+
+def _probe_file(path: Path) -> dict[str, Any]:
+    return json.loads(subprocess.check_output(
+        [str(FFPROBE), "-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name",
+         "-of", "json", str(path)], text=True, timeout=30))
+
+
+def _segment_filter(
+    seg: dict[str, Any], index: int, total: int, style: dict[str, Any],
+    temp_dir: Path,
+) -> str:
+    out_dur = max(0.2, float(seg["output_duration"]))
+    src_dur = max(0.1, float(seg["end_time"]) - float(seg["start_time"]))
+    # ``setpts`` multiplies timestamps: >1 slows the clip down.
+    pts = max(0.05, out_dur / src_dur)
+    fade = 0.30 if style["transition"] == "fade" else 0.0
+    parts = [
+        "scale=1280:720:force_original_aspect_ratio=decrease",
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black",
+        "setsar=1",
+    ]
+    if abs(pts - 1.0) > 0.005:
+        parts.append(f"setpts={pts:.6f}*PTS")
+    parts.extend([
+        "fps=30",
+        "eq=contrast=1.055:saturation=1.13:brightness=0.008",
+    ])
+    # A short dip to black at every cut reads as an intentional transition;
+    # hard cuts keep the reel punchy.
+    if index == 0:
+        parts.append("fade=t=in:st=0:d=0.35")
+    elif fade:
+        parts.append(f"fade=t=in:st=0:d={fade:.2f}")
+    if index == total - 1:
+        parts.append(f"fade=t=out:st={max(0.0, out_dur - 0.38):.3f}:d=0.38")
+    elif fade:
+        parts.append(f"fade=t=out:st={max(0.0, out_dur - fade):.3f}:d={fade:.2f}")
+
+    font = FONT_CJK if FONT_CJK.is_file() else FONT_LATIN
+    if style["captions"] and font.is_file():
+        if index == 0:
+            title_file = temp_dir / "title.txt"
+            title_file.write_text("MoTrack 高光", encoding="utf-8")
+            parts.append(
+                "drawtext=textfile='" + _filter_path(title_file) + "'"
+                + ":fontfile='" + _filter_path(font) + "'"
+                + ":fontcolor=white@0.94:fontsize=46:x=(w-tw)/2:y=h*0.15"
+                + ":borderw=2:bordercolor=black@0.45"
+                + ":enable='lt(t,2.4)'"
+            )
+        label = str(seg.get("label") or seg.get("display_name") or "精彩片段")
+        caption = temp_dir / f"cap_{index:02d}.txt"
+        caption.write_text(f"{label}   {_clock(float(seg['start_time']))}", encoding="utf-8")
+        parts.append("drawbox=x=34:y=h-126:w=7:h=70:color=0xFF7A18@0.95:t=fill")
+        parts.append(
+            "drawtext=textfile='" + _filter_path(caption) + "'"
+            + ":fontfile='" + _filter_path(font) + "'"
+            + ":fontcolor=white:fontsize=27:x=58:y=h-122"
+            + ":box=1:boxcolor=black@0.42:boxborderw=13"
+            + ":shadowcolor=black@0.55:shadowx=1:shadowy=2"
+        )
+    if FONT_LATIN.is_file():
+        parts.append(
+            "drawtext=text='MOTRACK':fontfile='" + _filter_path(FONT_LATIN) + "'"
+            + ":fontcolor=white@0.40:fontsize=16:x=w-tw-30:y=26"
+            + ":shadowcolor=black@0.5:shadowx=1:shadowy=1"
+        )
+    return ",".join(parts)
+
+
+def _render_segment(
+    video: Path, seg: dict[str, Any], index: int, total: int, style: dict[str, Any],
+    temp_dir: Path, destination: Path, has_audio: bool,
+) -> None:
+    src_dur = max(0.1, float(seg["end_time"]) - float(seg["start_time"]))
+    out_dur = max(0.2, float(seg["output_duration"]))
+    speed = max(0.2, min(2.0, float(seg.get("speed", 1.0) or 1.0)))
+    vf = _segment_filter(seg, index, total, style, temp_dir)
+
+    def command(with_look: bool) -> list[str]:
+        cmd = [str(FFMPEG), "-y", "-v", "error",
+               "-ss", f"{float(seg['start_time']):.3f}", "-t", f"{src_dur:.3f}", "-i", str(video)]
+        if not has_audio:
+            cmd += ["-f", "lavfi", "-t", f"{out_dur:.3f}", "-i",
+                    "anullsrc=channel_layout=stereo:sample_rate=48000"]
+        filters = vf if with_look else (
+            "scale=1280:720:force_original_aspect_ratio=decrease,"
+            "pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
+            "setpts=" + f"{max(0.05, out_dur / src_dur):.6f}" + "*PTS,fps=30"
+        )
+        cmd += ["-map", "0:v:0"]
+        audio_filters = []
+        if has_audio:
+            cmd += ["-map", "0:a:0"]
+            if abs(speed - 1.0) > 0.005:
+                audio_filters.append(f"atempo={speed:.4f}")
+        else:
+            cmd += ["-map", "1:a:0"]
+        cmd += ["-vf", filters]
+        if audio_filters:
+            cmd += ["-af", ",".join(audio_filters)]
+        cmd += ["-t", f"{out_dur:.3f}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart", str(destination)]
+        return cmd
+
+    try:
+        subprocess.run(command(True), check=True, timeout=600)
+    except subprocess.CalledProcessError:
+        # A missing font or an exotic source must never break the whole render.
+        subprocess.run(command(False), check=True, timeout=600)
+
+
 def render_plan(video_id: str, plan: dict[str, Any], destination: Path) -> dict[str, Any]:
+    """Render a real multi-clip montage with trims, transitions and captions."""
     clips = plan.get("clips", [])
     if not clips:
         raise ValueError("empty highlight plan")
-    duration = _video_info(VIDEO_IDS[video_id])["duration"]
+    info = _video_info(VIDEO_IDS[video_id])
+    duration = float(info["duration"])
+    has_audio = any(stream.get("codec_type") == "audio" for stream in info.get("streams", []))
     for clip in clips:
         # Clamp model-generated context to the real source length.  A candidate
         # at the very end of the video otherwise gets ``end + 2s`` and fails
@@ -628,30 +753,99 @@ def render_plan(video_id: str, plan: dict[str, Any], destination: Path) -> dict[
         start_time = max(0.0, min(float(clip["start_time"]), duration - 0.1))
         end_time = min(duration, max(start_time + 0.1, float(clip["end_time"])))
         clip["start_time"], clip["end_time"] = round(start_time, 3), round(end_time, 3)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    # A single timeline span preserves audio/video sync and avoids custom FFmpeg logic.
-    start = min(float(x["start_time"]) for x in clips)
-    end = max(float(x["end_time"]) for x in clips)
-    requested = float(plan.get("target_duration", end - start))
-    target = max(0.1, min(requested, duration))
-    # Honour the user's requested duration when the source is long enough.
-    # Previously this was clamped to the selected clips' span, so asking for
-    # 20 s could return only a 10 s file.
-    if end - start < target:
-        new_end = min(duration, start + target)
-        if new_end - start < target:
-            start = max(0.0, new_end - target)
-        end = new_end
+
+    style = normalize_edit_style(plan.get("edit_style"))
+    requested = float(plan.get("target_duration", max(x["end_time"] for x in clips) - min(x["start_time"] for x in clips)))
+    meta = duration_meta(requested, duration)
+    target = meta["effective_duration"]
+
+    precomputed = all(clip.get("output_duration") for clip in clips) and abs(
+        sum(float(clip["output_duration"]) for clip in clips) - target
+    ) <= 0.12
+    if precomputed:
+        segments = [dict(clip) for clip in clips]
+        # Clamp pre-computed durations so they always fit the physical source.
+        for seg in segments:
+            speed = max(0.2, float(seg.get("speed", 1.0) or 1.0))
+            available = (float(seg["end_time"]) - float(seg["start_time"])) / speed
+            seg["output_duration"] = round(min(float(seg["output_duration"]), available), 3)
     else:
-        end = start + target
+        segments = build_montage(clips, target, duration, style, max_clips=len(clips))
+
+    if not segments:
+        raise ValueError("no renderable highlight segments")
+    # Final duration correction: the reel must not drift simply because a
+    # plan was assembled by a different caller.
+    total = sum(float(seg["output_duration"]) for seg in segments)
+    diff = target - total
+    if abs(diff) > 1e-6:
+        normal = [i for i, seg in enumerate(segments) if not seg.get("replay")] or list(range(len(segments)))
+        seg = segments[normal[-1]]
+        seg["output_duration"] = round(max(0.2, float(seg["output_duration"]) + diff), 3)
+        if not seg.get("replay"):
+            seg["end_time"] = round(min(duration, float(seg["start_time"]) + float(seg["output_duration"])), 3)
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
     began = time.perf_counter()
-    subprocess.run([str(FFMPEG), "-y", "-v", "error", "-ss", str(start), "-to", str(end), "-i", str(VIDEO_IDS[video_id]),
-                    "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", str(destination)],
-                   check=True, timeout=600)
-    probe = json.loads(subprocess.check_output([str(FFPROBE), "-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name", "-of", "json", str(destination)], text=True, timeout=30))
-    return {"path": str(destination.relative_to(ROOT)), "start": round(start, 3), "end": round(end, 3),
-            "requested_duration": round(requested, 3),
-            "duration": float(probe["format"]["duration"]), "probe": probe, "render_seconds": round(time.perf_counter() - began, 3)}
+    with tempfile.TemporaryDirectory(prefix="motrack_render_", dir=str(destination.parent)) as raw_tmp:
+        temp_dir = Path(raw_tmp)
+        paths: list[Path] = []
+        for index, seg in enumerate(segments):
+            seg_path = temp_dir / f"seg_{index:02d}.mp4"
+            _render_segment(VIDEO_IDS[video_id], seg, index, len(segments), style, temp_dir, seg_path, has_audio)
+            paths.append(seg_path)
+        listing = temp_dir / "concat.txt"
+        listing.write_text("\n".join(f"file '{path.name}'" for path in paths) + "\n", encoding="utf-8")
+        try:
+            subprocess.run([str(FFMPEG), "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                            "-i", str(listing), "-c", "copy", "-movflags", "+faststart", str(destination)],
+                           cwd=str(temp_dir), check=True, timeout=600)
+        except subprocess.CalledProcessError:
+            subprocess.run([str(FFMPEG), "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                            "-i", str(listing), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+                            "-movflags", "+faststart", str(destination)],
+                           cwd=str(temp_dir), check=True, timeout=600)
+
+    probe = _probe_file(destination)
+    output_start = 0.0
+    timeline = []
+    for index, seg in enumerate(segments):
+        out_dur = float(seg["output_duration"])
+        timeline.append({
+            "index": index + 1,
+            "label": seg.get("label") or seg.get("display_name") or EVENT_TYPE_ZH.get(seg.get("event_type", ""), "精彩片段"),
+            "event_type": seg.get("event_type"),
+            "source_start": round(float(seg["start_time"]), 3),
+            "source_end": round(float(seg["end_time"]), 3),
+            "output_start": round(output_start, 3),
+            "output_end": round(output_start + out_dur, 3),
+            "output_duration": round(out_dur, 3),
+            "speed": float(seg.get("speed", 1.0)),
+            "replay": bool(seg.get("replay")),
+        })
+        output_start += out_dur
+
+    normal = [seg for seg in segments if not seg.get("replay")] or segments
+    return {
+        "path": str(destination.relative_to(ROOT)),
+        "start": round(min(float(x["start_time"]) for x in normal), 3),
+        "end": round(max(float(x["end_time"]) for x in normal), 3),
+        "requested_duration": meta["requested_duration"],
+        "effective_duration": meta["effective_duration"],
+        "source_duration": meta["source_duration"],
+        "duration_clamped": meta["duration_clamped"],
+        "duration_note": meta["duration_note"],
+        "duration": float(probe["format"]["duration"]),
+        "probe": probe,
+        "render_seconds": round(time.perf_counter() - began, 3),
+        "render_mode": "multi_clip_montage",
+        "edit_style": style,
+        "transition": style["transition"],
+        "captions": style["captions"],
+        "slow_motion": style["slow_motion"],
+        "segments": timeline,
+    }
 
 
 def _clip_span(clips: list[dict[str, Any]]) -> float:
@@ -693,6 +887,7 @@ class LightweightSession:
     state: str = "INTENT_PARSED"
     output_dir: Path = field(init=False)
     video_duration: float = field(init=False, default=0.0)
+    edit_style: dict[str, Any] = field(default_factory=lambda: normalize_edit_style(None))
 
     def __post_init__(self) -> None:
         if self.video_id not in VIDEO_IDS:
@@ -720,58 +915,33 @@ class LightweightSession:
     def _score(item: dict[str, Any]) -> float:
         return float(item.get("final_ranking_score", item.get("raw_model_score", 0.0)))
 
-    def _make_plan(self, selected: list[dict[str, Any]], target: float = 20.0, max_clips: int = 3) -> dict[str, Any]:
+    def _make_plan(self, selected: list[dict[str, Any]], target: float = 20.0, max_clips: int | None = None, style: dict[str, Any] | None = None) -> dict[str, Any]:
         if not selected:
             raise ValueError("没有满足条件的本地动作候选")
-        target = max(5.0, min(60.0, float(target)))
-        # Build coherent clusters first.  A highlight is rendered as one
-        # continuous source window, so mixing an event at 20s with one at 140s
-        # would include over two minutes of unrelated footage.  Ranking a
-        # cluster by its strongest candidates keeps the output watchable.
-        ordered = sorted(selected, key=lambda x: float(x["start_time"]))
-        clusters: list[list[dict[str, Any]]] = []
-        gap_limit = max(5.0, target * 0.5)
-        for item in ordered:
-            if clusters and float(item["start_time"]) - float(clusters[-1][-1]["end_time"]) <= gap_limit:
-                clusters[-1].append(item)
-            else:
-                clusters.append([item])
-        def cluster_score(cluster: list[dict[str, Any]]) -> float:
-            scores = sorted((self._score(x) for x in cluster), reverse=True)[:3]
-            return scores[0] + 0.35 * sum(scores[1:])
-        best = max(clusters, key=cluster_score)
-        # Greedily add the strongest candidates that still fit one continuous
-        # window (including 2s context on each side).
-        chosen: list[dict[str, Any]] = []
-        for item in sorted(best, key=self._score, reverse=True):
-            trial = chosen + [item]
-            span = (max(float(x["end_time"]) for x in trial) + 2.0) - (min(float(x["start_time"]) for x in trial) - 2.0)
-            if not chosen or span <= target:
-                chosen = trial
-            if len(chosen) >= max(1, min(max_clips, 8)):
-                break
-        chosen.sort(key=lambda x: float(x["start_time"]))
-        clips = []
-        source_end = self.video_duration or (max(float(x["end_time"]) for x in chosen) + 2.0)
-        for item in chosen:
-            start = max(0.0, float(item["start_time"]) - 2.0)
-            end = min(source_end, float(item["end_time"]) + 2.0)
-            if end - start < 1.0:
-                start = max(0.0, end - 3.0)
-            clips.append({
-                "event_id": item["event_id"],
-                "start_time": round(start, 3),
-                "end_time": round(end, 3),
-                "event_type": item["event_type"],
-                "display_name": item.get("display_name") or EVENT_TYPE_ZH.get(item["event_type"], item["event_type"]),
-                "action_label_zh": item.get("action_label_zh"),
-                "raw_model_score": self._score(item),
-                "verification_status": item["verification_status"],
-            })
-        clips = fit_clips_to_target(clips, target)
-        self.plan = {"schema_version": "1.1", "source_video_id": self.video_id, "target_duration": target, "clips": clips,
-                     "evidence_status": "MODEL_PREDICTED",
-                     "note": "本地 X3D 只识别通用篮球动作，不确认进球、球员或回合归属。"}
+        style = normalize_edit_style(style or self.edit_style)
+        self.edit_style = style
+        source_duration = self.video_duration or (max(float(x["end_time"]) for x in selected) + 2.0)
+        meta = duration_meta(target, source_duration)
+        target = meta["effective_duration"]
+        clips = build_montage(selected, target, source_duration, style, max_clips=max_clips)
+        if not clips:
+            raise ValueError("没有足够的素材生成高光")
+        self.plan = {
+            "schema_version": "1.2",
+            "source_video_id": self.video_id,
+            "target_duration": round(target, 3),
+            "clips": clips,
+            "edit_style": style,
+            "pace_label": PACE_ZH[style["pace"]],
+            "transition_label": TRANSITION_ZH[style["transition"]],
+            "requested_duration": meta["requested_duration"],
+            "effective_duration": meta["effective_duration"],
+            "source_duration": meta["source_duration"],
+            "duration_clamped": meta["duration_clamped"],
+            "duration_note": meta["duration_note"],
+            "evidence_status": "MODEL_PREDICTED",
+            "note": "本地 X3D 只识别通用篮球动作，不确认进球、球员或回合归属。",
+        }
         self.state = "PLAN_CREATED"; self._trace("create_highlight_plan", self.plan)
         (self.output_dir / "highlight_plan.json").write_text(json.dumps(self.plan, ensure_ascii=False, indent=2), encoding="utf-8")
         return self.plan
