@@ -1,0 +1,15 @@
+.env
+.secrets/
+.venv/
+.venv_lightweight/
+.cache/
+__pycache__/
+*.py[cod]
+outputs/**
+!outputs/.gitkeep
+inputs/**
+!inputs/.gitkeep
+
+# Project-local media tooling is reproducible from documented official sources;
+# do not publish large binaries or downloaded archives.
+tools/ffmpeg/

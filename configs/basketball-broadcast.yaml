@@ -1,0 +1,38 @@
+# MoTrack overlay for HypeCut's shipped sports-broadcast profile.
+# Copy/edit the score-bug ROI after inspecting a contact sheet of the broadcaster.
+profile: basketball-broadcast
+signals:
+  enabled: [crowd_roar, whistle, roi_change, audio_rms, speech_band, scene_change, motion]
+  weights:
+    crowd_roar: 1.8
+    whistle: 0.7
+    roi_change: 1.5
+    audio_rms: 0.5
+    speech_band: 0.8
+    scene_change: 0.4
+    motion: 0.5
+  params:
+    crowd_roar: {sustain_seconds: 2.5, baseline_seconds: 45.0}
+    roi_change:
+      # Normalised x0,y0,x1,y1. Verify before every new broadcaster.
+      box: [0.0, 0.0, 0.22, 0.14]
+    whistle: {low_hz: 2000, high_hz: 5000}
+  smooth_seconds: 2.5
+segments:
+  min_duration: 10.0
+  max_duration: 30.0
+  pre_roll: 6.0
+  post_roll: 6.0
+  reaction_lag: 2.5
+  merge_gap: 4.0
+  percentile: 95.0
+  max_clips: 0
+  target_duration: 240.0
+  snap_window: 3.0
+  snap_to_dissolves: true
+  trim_to_silence: false
+render: {crf: 20, fade: 0.3}
+refiners: [diversity, pacing, similarity]
+refiner_params:
+  pacing: {ideal: 18.0, tolerance: 8.0}
+  diversity: {min_gap: 180.0, strength: 0.45}
