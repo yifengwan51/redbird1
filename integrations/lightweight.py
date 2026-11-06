@@ -245,7 +245,7 @@ def _expand_windows(windows: list[list[float]], limits: list[tuple[float, float]
         moved = 0.0
         for i, (lo, hi) in enumerate(windows):
             cap_left = max(0.0, lo - limits[i][0])
-            cap_right = max(0.0, hi < limits[i][1] and limits[i][1] - hi or 0.0)
+            cap_right = max(0.0, limits[i][1] - hi)
             capacity = cap_left + cap_right
             if capacity <= 1e-9:
                 continue
@@ -313,8 +313,7 @@ def build_montage(
     if style["slow_motion"] and target >= 9.0:
         anchor = max(chosen, key=_score_of)
         anchor_window = windows[chosen.index(anchor)]
-        span = min(REPLAY_MAX_SOURCE, max(1.2, anchor_window[1] - anchor_window[0] * 0.0))
-        span = min(span, anchor_window[1] - anchor_window[0])
+        span = min(REPLAY_MAX_SOURCE, anchor_window[1] - anchor_window[0])
         if span >= 1.2:
             center = min(max(_center_of(anchor), anchor_window[0] + span / 2.0), anchor_window[1] - span / 2.0)
             replay = {
