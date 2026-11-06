@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 
 EVENT_TYPES = {"dunk", "three_pointer", "block", "steal", "fast_break", "layup", "scoring_play", "celebration", "defensive_play", "unknown"}
+VISION_EVENT_TYPES = {"shot_attempt", "made_basket", "missed_shot", "steal", "rebound", "pass", "fast_break", "UNKNOWN"}
 
 
 @dataclass
@@ -39,6 +40,57 @@ def validate_event(item: dict[str, Any], duration: float) -> dict[str, Any]:
             "confidence": confidence, "evidence_timestamps": evidence,
             "description": str(item.get("description", "")), "uncertainty": str(item.get("uncertainty", "")),
             "source": "vlm_inference"}
+
+
+def validate_vision_event(item: dict[str, Any], window_start: float, window_end: float) -> dict[str, Any]:
+    """Validate one model-produced vision event against its source window.
+
+    The vision model is an untrusted JSON producer.  Timestamps are clamped to
+    the window, zero-length events are widened to a minimal evidence interval,
+    confidence is clamped, and unknown labels become ``UNKNOWN``.
+    """
+    if not isinstance(item, dict):
+        raise ValueError("event must be an object")
+    event_type = str(item.get("event_type", "UNKNOWN"))
+    if event_type not in VISION_EVENT_TYPES:
+        event_type = "UNKNOWN"
+    try:
+        start, end = float(item["start_time"]), float(item["end_time"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("event timestamps must be numeric") from exc
+    if end < start:
+        start, end = end, start
+    start = min(max(window_start, start), window_end)
+    end = min(max(window_start, end), window_end)
+    if end - start < 0.5:
+        end = min(window_end, start + 0.5)
+    if end <= start:
+        raise ValueError("event timestamps must lie inside the source window")
+    try:
+        confidence = float(item.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = min(1.0, max(0.0, confidence))
+    frames = []
+    for value in item.get("evidence_frames", []) or []:
+        try:
+            frame = float(value)
+        except (TypeError, ValueError):
+            continue
+        if start <= frame <= end:
+            frames.append(round(frame, 3))
+    if not frames:
+        frames = [round((start + end) / 2, 3)]
+    result = dict(item)
+    result.update({
+        "event_type": event_type,
+        "start_time": round(start, 3),
+        "end_time": round(end, 3),
+        "confidence": round(confidence, 6),
+        "evidence_frames": frames,
+        "verification_status": "UNVERIFIED" if event_type == "UNKNOWN" else "MODEL_PREDICTED",
+    })
+    return result
 
 
 class BoundedAgent:

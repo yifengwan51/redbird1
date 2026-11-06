@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-from integrations.lightweight import ROOT, OUT, VIDEO_IDS, _hype_segments, _json, _video_info, _windows, render_plan, X3D
+from integrations.lightweight import ROOT, OUT, VIDEO_IDS, _fingerprint, _hype_segments, _json, _video_info, _windows, fit_clips_to_target, render_plan, X3D
 
 QUALITY_OUT = ROOT / "outputs" / "lightweight_quality_v2"
 
@@ -136,12 +136,17 @@ def merge_candidates(audit: dict[str,Any], config:V2Config=V2Config()) -> list[d
 def v2_events(video_id:str, force:bool=False, config:V2Config=V2Config()) -> dict[str,Any]:
     destination=QUALITY_OUT / video_id; destination.mkdir(parents=True,exist_ok=True)
     events_file=destination/'candidate_events.json'; audit_file=destination/'raw_window_predictions.json'
-    if events_file.exists() and audit_file.exists() and not force: return _json(events_file,{})
+    fingerprint=_fingerprint(VIDEO_IDS[video_id])
+    if events_file.exists() and audit_file.exists() and not force:
+        cached=_json(events_file,{})
+        if not cached.get('source_fingerprint') or cached['source_fingerprint']==fingerprint:
+            return cached
     audit=audit_windows(video_id,config); candidates=merge_candidates(audit,config)
+    audit['source_fingerprint']=fingerprint
     # raw audit must include post-merge assignment for every scanned window.
     audit_file.write_text(json.dumps(audit,ensure_ascii=False,indent=2),encoding='utf-8')
     raw_count=len(_raw_candidates(audit))
-    result={'schema_version':'2.0','candidate_version':'lightweight_v2','video_id':video_id,'config':asdict(config),'events':candidates,
+    result={'schema_version':'2.0','candidate_version':'lightweight_v2','video_id':video_id,'source_fingerprint':fingerprint,'config':asdict(config),'events':candidates,
             'candidate_count':len(candidates),'raw_candidate_count':raw_count,'duplicate_merge_ratio':round((raw_count-len(candidates))/raw_count,6) if raw_count else 0,
             'raw_window_count':audit['window_count'],'limitations':'No human truth: Precision/Recall/F1/Coverage are UNVERIFIED.'}
     events_file.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -163,14 +168,18 @@ def candidates_for_variant(video_id:str,variant:str) -> list[dict[str,Any]]:
 
 def make_plan(video_id:str,variant:str,target_duration:float=15.0,max_clips:int=3) -> dict[str,Any]:
     source=candidates_for_variant(video_id,variant)
+    source_duration=float(_video_info(VIDEO_IDS[video_id])['duration'])
     ranked=sorted(source,key=lambda x:float(x.get('final_ranking_score',x.get('raw_model_score',0.0))),reverse=True)
     chosen=[]
     for event in ranked:
-        start=max(0.0,float(event['start_time'])-2.0);end=float(event['end_time'])+2.0
-        if end-start<3.0: end=start+3.0
+        start=max(0.0,float(event['start_time'])-2.0);end=min(source_duration,float(event['end_time'])+2.0)
+        start=min(start,max(0.0,source_duration-0.5))
+        if end-start<3.0: end=min(source_duration,start+3.0)
+        if end<=start: continue
         if any(max(start,c['start_time'])<min(end,c['end_time']) for c in chosen): continue
         chosen.append({'event_id':event['event_id'],'event_type':event['event_type'],'start_time':start,'end_time':end,'ranking_score':event.get('final_ranking_score',event.get('raw_model_score'))})
         if len(chosen)>=max_clips: break
+    chosen=fit_clips_to_target(chosen,float(target_duration),score_key='ranking_score')
     return {'schema_version':'2.0','candidate_version':variant,'source_video_id':video_id,'target_duration':target_duration,'clips':sorted(chosen,key=lambda x:x['start_time']),
             'selection_rule':'descending transparent rank, then reject overlapping context windows','verification_status':'MODEL_PREDICTED' if variant!='hypecut' else 'SIGNAL_ONLY'}
 

@@ -58,10 +58,23 @@ def local_file(relative: str) -> Path:
 
 
 def load_labels() -> dict[str, list[dict[str, Any]]]:
+    if not LABELS.is_file():
+        raise FileNotFoundError(f"missing BARD labels: {LABELS}")
     result: dict[str, list[dict[str, Any]]] = {}
-    for line in LABELS.read_text(encoding="utf-8").splitlines()[1:]:
-        path, actions, _ = line.split(";", 2)
-        result[path] = ast.literal_eval(actions)
+    for line_number, line in enumerate(LABELS.read_text(encoding="utf-8").splitlines()[1:], 2):
+        if not line.strip():
+            continue
+        parts = line.split(";", 2)
+        if len(parts) != 3:
+            raise ValueError(f"malformed BARD label row {line_number}")
+        path, actions, _ = parts
+        try:
+            parsed = ast.literal_eval(actions)
+        except (ValueError, SyntaxError) as exc:
+            raise ValueError(f"invalid actions on BARD label row {line_number}") from exc
+        if not isinstance(parsed, list):
+            raise ValueError(f"actions must be a list on BARD label row {line_number}")
+        result[path] = parsed
     return result
 
 

@@ -1,79 +1,138 @@
-# MoTrack：篮球高光提取与复盘适配层
+# MoTrack：篮球高光与智能复盘
 
-此项目以未改动的 `hypecut_upstream/` 为上游，MoTrack 代码仅在 `integrations/` 和根目录编排。上游版本：`7dafc9d538548225b36d826cb445caf825ca3833`，许可证 Apache-2.0。
+MoTrack 是一个**给普通用户使用**的本地篮球视频工具：选一段比赛视频，选择想要的时长和内容，它会自动找出精彩片段，生成可播放、可下载的集锦，并给出一段中文复盘。
 
-## 状态与限制
+所有处理默认在本机完成，素材不需要上传到外部服务。界面和提示均为中文，不需要了解模型、FFmpeg 或命令行。
 
-项目内 FFmpeg/FFprobe 已部署，HypeCut 已对本地合成 MP4 完成候选分析与 MP4 导出。真实篮球比赛素材尚未提供，因此篮球事件识别质量、真实比赛集锦和复盘均未验证。DeepSeek 不会在未显式加入 `--allow-api` 时发出请求；本项目尚未发起任何 API 调用。
-
-## 运行
-
-将已获授权的 MP4 放入 `inputs/` 后：
-
-```bash
-./run_motrack.sh baseline inputs/game.mp4
-```
-
-完整 Agent 模式（首次真实计费请求前必须明确取得许可；密钥只经环境变量读取）：
-
-```bash
-DEEPSEEK_API_KEY='...' ./run_motrack.sh agent inputs/game.mp4 --allow-api
-```
-
-可选环境变量：`DEEPSEEK_BASE_URL`（默认 `https://api.deepseek.com`）、`DEEPSEEK_MODEL`（默认 `deepseek-flash`）、`MOTRACK_PYTHON`。启动脚本仅为当前进程注入 `tools/ffmpeg/bin`，不会修改系统或用户级 PATH。密钥未写入文件、日志或输出。
-
-## 输出约定
-
-- `outputs/clips/candidate_highlights.json`：HypeCut 候选时间线
-- `outputs/diagnostics/`：contact sheet、Agent 调用记录
-- `outputs/highlights/highlights.mp4`、`highlight_plan.json`
-- `outputs/recaps/recap.json`、`recap.html`
-
-执行前会拒绝 tiqu1 以外的输入路径。模型只能看候选抽帧；不得上传整段视频。事件只能在证据支持时分类，未证实情况保持 `unknown`。
-
-## 测试
-
-```bash
-/home/ht/miniforge3/envs/vlm/bin/python3.12 -m unittest tests/test_offline.py
-```
-
-测试覆盖 schema、源视频边界、允许工具名单和工具调用上限；不等同于真实 API 或真实篮球比赛验收。
-
-## 复盘演示
-
-在已有 DeepSeek 运行结果上创建审核产物并进行无计费检索：
-
-```bash
-./motrack_recap_demo.py --build-review
-./motrack_recap_demo.py '找出所有投篮事件'
-```
-
-审核页是 `outputs/agent_deepseek/review.html`。没有人工或视觉语义证据的事件始终显示为 `UNVERIFIED`。
-
-## 本地 Web MVP
+## 快速开始（推荐）
 
 ```bash
 ./run_motrack_web.sh
 ```
 
-打开 `http://127.0.0.1:8765/app/index.html`。浏览历史结果和使用缓存视觉生成高光不调用模型；点击聊天发送才会调用项目内 HTADC Agent。
+然后用浏览器打开：
 
-## Lightweight 本地 Agent（X3D）
-
-轻量路线是对 HypeCut 的补充，不替换上游 HypeCut：它先复用已有的 `scene_change`、`motion` 等候选时间段，再以低频全片扫描补充候选盲区，并在 HypeCut 区域加密抽取连续帧。模型为官方 PyTorchVideo X3D-XS（Kinetics-400），首次安装/权重都只缓存到项目内的 `.venv_lightweight/` 和 `.cache/torch/`；之后推理不调用 HTADC 或任何在线 LLM。
-
-```bash
-# 仅执行或复用本地 ČBF X3D 分析
-.venv_lightweight/bin/python run_lightweight_agent.py cbf --analyze
-
-# 确定性本地 Agent：分析缓存 → 计划 → FFmpeg 渲染 → FFprobe 验证
-.venv_lightweight/bin/python run_lightweight_agent.py cbf '生成投篮高光 20秒'
+```text
+http://127.0.0.1:8765/app/index.html
 ```
 
-运行 `./run_motrack_web.sh` 后，在网页顶部将模式切换为 **Lightweight Agent（本地 X3D）**。它和 LLM 模式共享视频、事件、计划、播放器、下载和工具轨迹接口；Lightweight 支持“生成投篮高光”“找出疑似投篮”“缩短到15秒”“查看关键事件”“解释这段视频”“导出视频”等确定性中文命令。
+页面里可以：
 
-重要限制：Kinetics-400 的 `shooting basketball` 仅产生 `MODEL_PREDICTED` 的**疑似**投篮候选，原始 softmax 不等于校准置信度，也不验证进球/未进、抢断、篮板、球员、球队或完整回合。没有人工标注时 Precision、Recall、F1 均为 `UNVERIFIED`。详见 [轻量模型报告](docs/MOTRACK_LIGHTWEIGHT_AGENT_REPORT.md)。
+1. 选择视频（ČBF 3x3 Tour 或 Doug McDermott）。
+2. 选择分析方式：**智能 Agent** 或 **本地轻量**。
+3. 选择想要的时长（10/15/20/30/45/60 秒，也可以自己输入 5–60 秒）。
+4. 选择内容：**投篮 / 扣篮** 或 **全部精彩动作**。
+5. 点击“生成高光”，完成后直接播放或下载。
+6. 也可以直接和 AI 助手聊天，例如：
+   - 生成 20 秒投篮高光
+   - 做一个 30 秒精彩集锦
+   - 找出所有疑似投篮
+   - 缩短到 10 秒
+   - 解释这段视频
 
-网页 Lightweight 生成、下载、会话缩短与浏览器验收的修复记录见 [交互修复报告](docs/MOTRACK_LIGHTWEIGHT_WEB_FIX.md)。
+服务只绑定本机回环地址，并且没有登录认证，请勿直接暴露到公网。
 
-Lightweight V2 提供完整 X3D 窗口审计、保守时序合并和 HypeCut/V1/V2 对照；它不是默认版本，也不代表已验证的篮球事件检测准确率。详见 [V2 质量审计报告](docs/MOTRACK_LIGHTWEIGHT_QUALITY_V2.md)。
+## 两种分析方式
+
+### 智能 Agent
+
+- 使用项目内已缓存的视觉事件来挑选片段。
+- 只有点击聊天发送时才会调用已配置的模型。
+- 依赖 `outputs/semantic_vision_live/basketball_events.json`；缓存缺失时页面会提示改用本地轻量模式。
+
+### 本地轻量（推荐离线使用）
+
+- 完全在本机运行 PyTorchVideo X3D-XS（Kinetics-400），不调用云端。
+- 首次分析需要扫描视频，可能要等一两分钟；之后会复用缓存。
+- 三种识别方式：
+  - **本地动作识别（推荐）**：识别扣篮、投篮、运球、通用篮球动作。
+  - **本地识别 + 审计视图**：保留更完整的候选和评分信息。
+  - **HypeCut 画面信号**：只使用画面/音频变化信号，适合快速找精彩镜头。
+- 本地模型只给出“疑似”动作候选，不确认是否进球、球员、球队或回合归属。
+
+## 高光时长
+
+生成时选择的目标时长会真正作用到输出视频上：
+
+- 只要原片够长，请求 20 秒就会生成约 20 秒的视频，不再被候选片段跨度压短。
+- 如果目标时长超过原片长度，会自动截断到原片长度。
+- 本地轻量模式会优先挑选一段连续的精彩区间，再按目标时长取窗口，避免把相隔很远的片段硬拼成一段包含大量无关内容的视频。
+
+## HypeCut-only
+
+HypeCut 候选来自 `outputs/real/<video>/default.json`，这是正常流程生成的主计划。旧版本读取 `sports-broadcast.json`，在 Doug 素材上会得到空结果；现在已经修复，并会在主计划缺失时回退到该视频可用的最完整计划。
+
+HypeCut 只表示“画面/音频变化明显”，不代表识别出了投篮或进球，结果需要回看确认。
+
+## 运行产物
+
+- `outputs/lightweight/latest_<video>.json`：本地轻量分析缓存
+- `outputs/lightweight_agent/<session>/highlight_plan.json`：本地 Agent 剪辑计划
+- `outputs/lightweight_agent/<session>/highlights.mp4`：生成的集锦
+- `outputs/lightweight_agent/<session>/tool_trace.json`：工具调用轨迹
+- `outputs/web_jobs/<job>/highlights.mp4`：智能 Agent 生成的任务视频
+- `outputs/real/<video>/default.json`：HypeCut 主候选计划
+
+网页中的“技术详情”可以查看候选分数、验证状态和原始运行信息；普通使用不需要展开。
+
+## 命令行（进阶）
+
+```bash
+# HypeCut 基线
+./run_motrack.sh baseline inputs/cbf_3x3_tour.mp4
+
+# 本地轻量：分析 + 生成 20 秒投篮高光
+.venv_lightweight/bin/python run_lightweight_agent.py cbf '生成投篮高光 20秒'
+
+# 只运行或复用本地分析
+.venv_lightweight/bin/python run_lightweight_agent.py cbf --analyze
+```
+
+完整 LLM Agent 会发起真实计费请求，必须显式批准；密钥只经环境变量或项目内 `.secrets/htadc_api_key` 读取：
+
+```bash
+./run_htadc_agent.sh inputs/game.mp4 --allow-api
+```
+
+API 配置：
+
+- `MOTRACK_API_BASE_URL`：OpenAI 兼容端点，默认内网 `http://sub2api.adc-ingress.aeroht.net/v1`
+- `MOTRACK_API_MODEL`：默认 `deepseek-v4.1-flash`
+- `MOTRACK_API_KEY`：优先环境变量，否则读取 `.secrets/htadc_api_key`
+- `MOTRACK_ALLOW_INSECURE_HTTP=1`：仅限可信内网；非回环 `http://` 默认被拒绝
+- `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`、`MOTRACK_PYTHON`：可选覆盖
+
+启动脚本只为当前进程注入 `tools/ffmpeg/bin`，不会修改系统 PATH。密钥不会写入文件或日志。
+
+## 安全与边界
+
+- 输入路径必须位于项目目录内。
+- 上传接口仅接受 MP4/WebM，单文件上限 200MB。
+- 所有事件都是模型推测，不能当作已确认的比赛事实。
+- 没有人工标注时，Precision、Recall、F1 均为 `UNVERIFIED`。
+- Kinetics-400 的原始 softmax 不是校准后的篮球事件概率，也不验证进球/未进、抢断、篮板、球员或回合。
+
+## 测试
+
+```bash
+/home/ht/miniforge3/envs/vlm/bin/python3.12 -m unittest discover -s tests -v
+```
+
+测试覆盖事件 schema、源视频边界、允许工具名单、工具调用上限、session/path 防穿越、明文 HTTP 端点拦截、视觉模型输出校验，以及高光计划与连续渲染窗口的时长适配。
+
+## 项目结构
+
+- `web/backend/app.py`：本地 Web API
+- `web/frontend/index.html`：中文用户界面（纯 HTML/CSS/JS，无外部前端依赖）
+- `integrations/lightweight.py`：本地 X3D 分析、计划、渲染和轻量 Agent
+- `integrations/lightweight_v2.py`：V2 审计视图与 HypeCut/V1/V2 对照
+- `integrations/motrack_agent.py`：视觉事件 schema 校验
+- `motrack_chat_optimized.py`：LLM Agent 对话入口
+- `hypecut_upstream/`：未修改的 HypeCut 上游
+- `tests/`：离线测试
+
+更多报告：
+
+- [轻量模型报告](docs/MOTRACK_LIGHTWEIGHT_AGENT_REPORT.md)
+- [Lightweight V2 质量审计](docs/MOTRACK_LIGHTWEIGHT_QUALITY_V2.md)
+- [Web 交互修复记录](docs/MOTRACK_LIGHTWEIGHT_WEB_FIX.md)

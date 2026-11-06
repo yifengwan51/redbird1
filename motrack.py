@@ -8,9 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 UPSTREAM = ROOT / "hypecut_upstream"
@@ -30,7 +28,7 @@ def run_hypecut(arguments: list[str]) -> None:
         raise RuntimeError("FFmpeg/FFprobe are not on PATH. HypeCut requires them; no fallback is used.")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(UPSTREAM / "src") + os.pathsep + env.get("PYTHONPATH", "")
-    subprocess.run([sys.executable, "-m", "hypecut", *arguments], cwd=UPSTREAM, env=env, check=True)
+    subprocess.run([sys.executable, "-m", "hypecut", *arguments], cwd=UPSTREAM, env=env, check=True, timeout=1800)
 
 
 def make_contact_sheet(video: Path, destination: Path, plan_path: Path | None = None) -> None:
@@ -114,17 +112,38 @@ def agent(video: Path, allow_api: bool) -> None:
     OUT.joinpath("diagnostics", "agent_initial_response.json").write_text(
         json.dumps({"tool_calls": [x.model_dump() for x in (response.choices[0].message.tool_calls or [])], "usage": client.usage}, ensure_ascii=False, indent=2), encoding="utf-8")
     # Tool execution is deliberately not fabricated: it follows only genuine model calls in the next implementation step.
-    print("Initial function-calling response recorded. No tool result was fabricated.")
+    print("Initial function-calling response recorded. This is a legacy smoke test; use `live-agent --allow-api` for the full loop.")
 
-def live_agent(video: Path) -> None:
+def _find_candidates(video: Path) -> Path | None:
+    """Find the real HypeCut plan whose recorded source matches this video."""
+    root = ROOT / "outputs" / "real"
+    if not root.is_dir():
+        return None
+    for candidate in sorted(root.glob("*/default.json")):
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if Path(data.get("source", "")).name == video.name:
+            return candidate
+    return None
+
+
+def live_agent(video: Path, allow_api: bool, candidates: Path | None = None) -> None:
     """Run the bounded live HTADC loop; key is supplied only by environment."""
+    if not allow_api:
+        raise RuntimeError("live-agent makes paid API calls. Add --allow-api only after approval.")
     key=os.getenv("MOTRACK_API_KEY","")
     if not key: raise RuntimeError("MOTRACK_API_KEY is required")
     from integrations.agent_runtime import FunctionLoop, HTADCModel, LocalTools
-    candidate=ROOT/"outputs/real/cbf/default.json"
-    if not candidate.exists(): raise RuntimeError("expected real CBF candidates are missing")
+    candidate = require_inside(candidates) if candidates is not None else _find_candidates(video)
+    if not candidate or not candidate.exists():
+        raise RuntimeError(f"no HypeCut candidate plan found for {video.name}; run baseline first or pass --candidates")
+    data = json.loads(candidate.read_text(encoding="utf-8"))
+    if data.get("source") and Path(data["source"]).name != video.name:
+        raise RuntimeError(f"candidate plan source does not match {video.name}")
     out=OUT/"agent_deepseek"; tools=LocalTools(ROOT,video,candidate,out)
-    model=HTADCModel(key,os.getenv("MOTRACK_API_BASE_URL","http://sub2api.adc-ingress.aeroht.net/v1"),os.getenv("MOTRACK_API_MODEL","deepseek-v4.1-flash"))
+    model=HTADCModel(key, os.getenv("MOTRACK_API_BASE_URL"), os.getenv("MOTRACK_API_MODEL","deepseek-v4.1-flash"))
     result=FunctionLoop(model,tools,max_calls=12).run("Use candidates and evidence; select up to three, keep context, render, verify, recap. Do not claim unverified basketball events as facts.")
     out.mkdir(parents=True,exist_ok=True); (out/"tool_trace.json").write_text(json.dumps(result,indent=2)); (out/"api_usage.json").write_text(json.dumps(model.usage,indent=2))
 
@@ -136,13 +155,15 @@ def main() -> int:
     p.add_argument("video", type=video_path); p.add_argument("--target", type=int, default=120); p.add_argument("--max-clips", type=int, default=8)
     p = sub.add_parser("agent", help="DeepSeek function-calling entrypoint (paid API opt-in)")
     p.add_argument("video", type=video_path); p.add_argument("--allow-api", action="store_true")
-    p = sub.add_parser("live-agent", help="approved HTADC live function-calling loop")
+    p = sub.add_parser("live-agent", help="approved HTADC live function-calling loop (paid API opt-in)")
     p.add_argument("video", type=video_path)
+    p.add_argument("--allow-api", action="store_true", help="explicitly approve paid API calls")
+    p.add_argument("--candidates", type=Path, help="HypeCut candidate JSON (defaults to the matching outputs/real plan)")
     args = parser.parse_args()
     try:
         if args.command == "baseline": baseline(args.video, args.target, args.max_clips)
         elif args.command == "agent": agent(args.video, args.allow_api)
-        else: live_agent(args.video)
+        else: live_agent(args.video, args.allow_api, args.candidates)
     except Exception as exc:
         print(f"MoTrack: {exc}", file=sys.stderr)
         return 2

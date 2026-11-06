@@ -12,12 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .api_config import resolve_base_url
+
 
 @dataclass(frozen=True)
 class DeepSeekSettings:
     api_key: str
     base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-flash"
+    model: str = "deepseek-chat"
     timeout_seconds: float = 45.0
     retries: int = 2
 
@@ -26,8 +28,8 @@ class DeepSeekSettings:
         key = os.getenv("DEEPSEEK_API_KEY", "").strip()
         if not key:
             raise RuntimeError("DEEPSEEK_API_KEY is not set; baseline mode remains available.")
-        return cls(key, os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
-                   os.getenv("DEEPSEEK_MODEL", "deepseek-flash"))
+        return cls(key, resolve_base_url(os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")),
+                   os.getenv("DEEPSEEK_MODEL", "deepseek-chat"))
 
 
 class DeepSeekClient:
@@ -58,9 +60,15 @@ class DeepSeekClient:
                 return response
             except Exception as exc:  # retained only as a safe final error below
                 error = exc
-                if attempt < self.settings.retries:
+                status = getattr(exc, "status_code", None)
+                retryable = not (isinstance(status, int) and 400 <= status < 500 and status not in {408, 409, 429})
+                if attempt < self.settings.retries and retryable:
                     time.sleep(1.0 * (2**attempt))
-        raise RuntimeError(f"DeepSeek request failed after {self.settings.retries + 1} attempts: {type(error).__name__}")
+                else:
+                    break
+        status = getattr(error, "status_code", None)
+        detail = f" (HTTP {status})" if isinstance(status, int) else ""
+        raise RuntimeError(f"DeepSeek request failed after {attempt + 1} attempts{detail}: {type(error).__name__}")
 
     @staticmethod
     def image_part(path: Path) -> dict[str, Any]:

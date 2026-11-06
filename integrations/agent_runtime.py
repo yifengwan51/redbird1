@@ -1,10 +1,10 @@
 """Safe, provider-neutral function-calling runtime and local MoTrack tools."""
 from __future__ import annotations
-import json, subprocess, uuid
+import json, os, subprocess, uuid
 from pathlib import Path
 from typing import Any
 
-from .motrack_agent import AgentState
+from .api_config import resolve_base_url
 
 TOOL_SCHEMAS = [
  {"type":"function","function":{"name":"list_candidates","parameters":{"type":"object","properties":{},"additionalProperties":False}}},
@@ -30,11 +30,11 @@ class LocalTools:
   return [{"candidate_id":f"candidate-{i+1}","start":x["start"],"end":x["end"],"score":x["score"],"reasons":x.get("reasons",{})} for i,x in enumerate(self.data["segments"])]
  def get_candidate_detail(self,candidate_id): return {"candidate_id":candidate_id,**self._candidate(candidate_id),"source":"hypecut"}
  def get_video_info(self):
-  probe=self.root/"tools/ffmpeg/bin/ffprobe"; raw=subprocess.check_output([str(probe),"-v","error","-show_entries","format=duration:stream=codec_type,codec_name,r_frame_rate","-of","json",str(self.video)])
+  probe=self.root/"tools/ffmpeg/bin/ffprobe"; raw=subprocess.check_output([str(probe),"-v","error","-show_entries","format=duration:stream=codec_type,codec_name,r_frame_rate","-of","json",str(self.video)], timeout=30)
   return json.loads(raw)
  def get_evidence_frames(self,candidate_id):
   c=self._candidate(candidate_id); p=self.out/f"{candidate_id}_evidence.jpg"; ff=self.root/"tools/ffmpeg/bin/ffmpeg"
-  subprocess.run([str(ff),"-y","-v","error","-ss",str((c["start"]+c["end"])/2),"-i",str(self.video),"-frames:v","1",str(p)],check=True)
+  subprocess.run([str(ff),"-y","-v","error","-ss",str((c["start"]+c["end"])/2),"-i",str(self.video),"-frames:v","1",str(p)],check=True,timeout=60)
   return {"candidate_id":candidate_id,"frame":str(p.relative_to(self.root)),"timestamp":round((c["start"]+c["end"])/2,3),"note":"Frame is evidence of imagery only; event type remains UNVERIFIED."}
  def create_highlight_plan(self,clips):
   if not clips: raise ValueError("clips cannot be empty")
@@ -51,14 +51,19 @@ class LocalTools:
  def render_highlights(self,plan_id):
   clips=self.plans[plan_id]; ff=self.root/"tools/ffmpeg/bin/ffmpeg"; output=self.out/f"{plan_id}.mp4"; parts=[]
   for i,c in enumerate(clips):
-   q=self.out/f"{plan_id}_{i}.mp4"; subprocess.run([str(ff),"-y","-v","error","-ss",str(c["start"]),"-to",str(c["end"]),"-i",str(self.video),"-c","copy",str(q)],check=True); parts.append(q)
+   q=self.out/f"{plan_id}_{i}.mp4"
+   # Re-encode every segment so cut points are frame-accurate.  Stream copy
+   # starts at the previous keyframe and silently changes clip boundaries.
+   subprocess.run([str(ff),"-y","-v","error","-ss",str(c["start"]),"-to",str(c["end"]),"-i",str(self.video),
+                   "-map","0:v:0","-map","0:a?","-c:v","libx264","-c:a","aac","-movflags","+faststart",str(q)],check=True,timeout=300)
+   parts.append(q)
   listing=self.out/f"{plan_id}.concat.txt"; listing.write_text("".join(f"file '{p.name}'\n" for p in parts))
-  subprocess.run([str(ff),"-y","-v","error","-f","concat","-safe","0","-i",str(listing),"-c","copy",str(output)],check=True)
+  subprocess.run([str(ff),"-y","-v","error","-f","concat","-safe","0","-i",str(listing),"-c","copy",str(output)],check=True,timeout=300)
   return {"plan_id":plan_id,"output_path":str(output.relative_to(self.root)),"status":"rendered"}
  def verify_render(self,output_path):
   p=(self.root/output_path).resolve()
   if self.root not in p.parents or not p.is_file(): raise ValueError("unapproved output path")
-  raw=subprocess.check_output([str(self.root/"tools/ffmpeg/bin/ffprobe"),"-v","error","-show_entries","format=duration:stream=codec_type,codec_name","-of","json",str(p)])
+  raw=subprocess.check_output([str(self.root/"tools/ffmpeg/bin/ffprobe"),"-v","error","-show_entries","format=duration:stream=codec_type,codec_name","-of","json",str(p)],timeout=30)
   x=json.loads(raw); kinds={s.get("codec_type") for s in x.get("streams",[])}
   return {"output_path":output_path,"duration":float(x["format"]["duration"]),"has_video":"video" in kinds,"has_audio":"audio" in kinds,"status":"verified"}
  def generate_recap(self,plan_id):
@@ -99,9 +104,12 @@ class MockModel:
 
 class HTADCModel:
  """OpenAI-compatible Chat Completions adapter for the approved HTADC proxy."""
- def __init__(self, api_key, base_url="http://sub2api.adc-ingress.aeroht.net/v1", model="deepseek-v4.1-flash"):
+ def __init__(self, api_key, base_url=None, model=None):
   from openai import OpenAI
-  self.client=OpenAI(api_key=api_key,base_url=base_url,timeout=45,max_retries=0); self.model=model; self.usage=[]
+  self.base_url=resolve_base_url(base_url)
+  self.client=OpenAI(api_key=api_key,base_url=self.base_url,timeout=45,max_retries=0)
+  self.model=model or os.getenv("MOTRACK_API_MODEL","deepseek-v4.1-flash")
+  self.usage=[]
  def complete(self,messages,tools):
   r=self.client.chat.completions.create(model=self.model,messages=messages,tools=tools,tool_choice="auto",max_tokens=700,temperature=0.1)
   m=r.choices[0].message; u=r.usage

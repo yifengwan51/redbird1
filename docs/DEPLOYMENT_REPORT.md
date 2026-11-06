@@ -45,7 +45,7 @@ cd /home/ht/motrack/tiqu1
 
 ```bash
 cd /home/ht/motrack/tiqu1
-DEEPSEEK_API_KEY='...' ./run_motrack.sh agent inputs/your_authorized_game.mp4 --allow-api
+./run_htadc_agent.sh inputs/your_authorized_game.mp4 --allow-api
 ```
 
 第二条会触发外部 API，仅在获得单独计费授权后使用。真实篮球验证需要一段已授权、含转播音频的 MP4；合成样片不能证明篮球高光识别能力。

@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """Stateful HTADC Function Calling chat over cached MoTrack visual events."""
 from __future__ import annotations
-import json,os,subprocess,sys,uuid
+import json,os,subprocess,sys
 from pathlib import Path
 from openai import OpenAI
+from integrations.api_config import resolve_base_url
 ROOT=Path(__file__).resolve().parent; OUT=ROOT/'outputs/agent_chat'; OUT.mkdir(parents=True,exist_ok=True); FF=ROOT/'tools/ffmpeg/bin/ffmpeg'; PROBE=ROOT/'tools/ffmpeg/bin/ffprobe'
 TOOLS=[{'type':'function','function':{'name':'search_events','description':'Search cached MODEL_PREDICTED basketball events only.','parameters':{'type':'object','properties':{'event_type':{'type':'string'},'start_time':{'type':'number'},'end_time':{'type':'number'},'min_confidence':{'type':'number'}},'additionalProperties':False}}},{'type':'function','function':{'name':'update_highlight_plan','description':'Create/update plan from event IDs with context and duration cap.','parameters':{'type':'object','properties':{'event_ids':{'type':'array','items':{'type':'string'}},'target_duration':{'type':'number'},'pre_context':{'type':'number'},'post_context':{'type':'number'}},'required':['event_ids'],'additionalProperties':False}}},{'type':'function','function':{'name':'render_highlights','description':'Render current plan locally.','parameters':{'type':'object','properties':{},'additionalProperties':False}}},{'type':'function','function':{'name':'verify_render','description':'Probe current output.','parameters':{'type':'object','properties':{},'additionalProperties':False}}},{'type':'function','function':{'name':'generate_recap','description':'Write evidence-bounded recap.','parameters':{'type':'object','properties':{},'additionalProperties':False}}}]
 class Chat:
  def __init__(self,video):
-  self.video=Path(video).resolve(); self.events=[e|{'event_id':f'vision-{i+1}'} for i,e in enumerate(json.loads((ROOT/'outputs/semantic_vision_live/basketball_events.json').read_text())['events']) if e['video_path'].endswith(self.video.name)];self.plan=None;self.trace=[];self.hist=[{'role':'system','content':'You are MoTrack. Use tools. Cached events are MODEL_PREDICTED, never human verified. Never claim made baskets, scores, teams or players without evidence. Reuse cached vision; do not request new image analysis.'}];self.usage=[]
-  self.client=OpenAI(api_key=os.environ['MOTRACK_API_KEY'],base_url=os.getenv('MOTRACK_API_BASE_URL','http://sub2api.adc-ingress.aeroht.net/v1'),timeout=90,max_retries=0)
+  self.video=Path(video).resolve()
+  cache=ROOT/'outputs/semantic_vision_live/basketball_events.json'
+  if not cache.is_file(): raise RuntimeError(f'cached vision events missing: {cache}')
+  payload=json.loads(cache.read_text()); items=payload.get('events') if isinstance(payload,dict) else None
+  if not isinstance(items,list): raise RuntimeError('cached vision events are malformed')
+  self.events=[e|{'event_id':f'vision-{i+1}'} for i,e in enumerate(items) if isinstance(e,dict) and str(e.get('video_path','')).endswith(self.video.name)]
+  if not self.events: raise RuntimeError(f'no cached vision events for {self.video.name}')
+  self.plan=None;self.trace=[];self.hist=[{'role':'system','content':'You are MoTrack. Use tools. Cached events are MODEL_PREDICTED, never human verified. Never claim made baskets, scores, teams or players without evidence. Reuse cached vision; do not request new image analysis.'}];self.usage=[]
+  self.client=OpenAI(api_key=os.environ['MOTRACK_API_KEY'],base_url=resolve_base_url(),timeout=90,max_retries=0)
  def call(self,name,a):
   if name=='search_events': r=[e for e in self.events if (not a.get('event_type') or e['event_type']==a['event_type']) and e['confidence']>=a.get('min_confidence',0) and (a.get('start_time') is None or e['end_time']>=a['start_time']) and (a.get('end_time') is None or e['start_time']<=a['end_time'])]
   elif name=='update_highlight_plan':
@@ -20,8 +28,9 @@ class Chat:
    if not self.plan: raise ValueError('no plan')
    clips=self.plan['clips'] # merge to avoid duplicate context
    a0=min(x['start'] for x in clips);b=max(x['end'] for x in clips); target=float(self.plan.get('target_duration',30)); b=min(b,a0+target)
-   subprocess.run([str(FF),'-y','-v','error','-ss',str(a0),'-to',str(b),'-i',str(self.video),'-c','copy',str(OUT/'highlights.mp4')],check=True);r={'path':'outputs/agent_chat/highlights.mp4','start':a0,'end':b}
-  elif name=='verify_render': r=json.loads(subprocess.check_output([str(PROBE),'-v','error','-show_entries','format=duration:stream=codec_type','-of','json',str(OUT/'highlights.mp4')]))
+   if b<=a0: raise ValueError('invalid render window')
+   subprocess.run([str(FF),'-y','-v','error','-ss',str(a0),'-to',str(b),'-i',str(self.video),'-map','0:v:0','-map','0:a?','-c:v','libx264','-c:a','aac','-movflags','+faststart',str(OUT/'highlights.mp4')],check=True,timeout=600);r={'path':'outputs/agent_chat/highlights.mp4','start':a0,'end':b}
+  elif name=='verify_render': r=json.loads(subprocess.check_output([str(PROBE),'-v','error','-show_entries','format=duration:stream=codec_type','-of','json',str(OUT/'highlights.mp4')],text=True,timeout=30))
   elif name=='generate_recap':
    r={'events':[{'event_id':x['event_id'],'event_type':x['event_type'],'confidence':x['confidence'],'statement':'Model-predicted shot attempt; result is unconfirmed.','verification_status':'MODEL_PREDICTED'} for x in self.plan['clips']]};(OUT/'match_recap.json').write_text(json.dumps(r,indent=2))
   else: raise ValueError('unapproved tool')
