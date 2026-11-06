@@ -1010,20 +1010,26 @@ class LightweightSession:
             raise ValueError("尚无剪辑计划")
         result = render_plan(self.video_id, self.plan, self.output_dir / "highlights.mp4")
         self.plan["rendered_window"] = {"start": result["start"], "end": result["end"], "duration": result["duration"]}
-        # The renderer exports one continuous source span.  Gaps between listed
-        # clips are therefore included in the MP4; record that fact explicitly.
-        self.plan["render_mode"] = "single_continuous_window"
+        self.plan["render_mode"] = result["render_mode"]
+        self.plan["segments"] = result["segments"]
+        self.plan["duration"] = result["duration"]
+        self.plan["duration_clamped"] = result["duration_clamped"]
+        self.plan["duration_note"] = result["duration_note"]
         self._write_plan()
         self.state = "RENDER_COMPLETED"; self._trace("render_highlights", result)
         self.state = "OUTPUT_VERIFIED"; self._trace("verify_render", result["probe"])
         return result
 
-    def ask(self, message: str) -> dict[str, Any]:
+    def ask(self, message: str, edit_style: dict[str, Any] | str | None = None) -> dict[str, Any]:
         """Execute a supported local command using state, rather than canned answers."""
         text = message.strip().lower()
         if not text:
             return self._save("请输入一条命令，例如“生成 20 秒投篮高光”。", {})
         try:
+            if edit_style is not None:
+                self.edit_style = normalize_edit_style(edit_style)
+            # Chat can override the UI's style ("做成紧凑一点 / 加慢放").
+            self.edit_style = edit_style_from_text(message, self.edit_style)
             is_hypecut = self.candidate_version == "hypecut"
             is_scoring = any(x in text for x in ("投篮", "出手", "shot", "shoot", "扣篮", "灌篮", "得分", "进球"))
             duration = self._duration_from_text(text)
@@ -1042,6 +1048,7 @@ class LightweightSession:
                     "• 做一个 30 秒精彩集锦\n"
                     "• 找出所有疑似投篮/扣篮\n"
                     "• 缩短到 15 秒 / 保留最精彩的 3 个片段\n"
+                    "• 做一个紧凑快剪，加慢动作回看\n"
                     "• 解释这段高光 / 导出视频\n"
                     "直接说你想做什么即可。",
                     {},
@@ -1063,9 +1070,21 @@ class LightweightSession:
                     return list(pool)
                 return [x for x in pool if x["event_type"] in SHOT_LIKE_TYPES]
 
-            def clamp_target(value: float) -> float:
-                total = self.video_duration or 60.0
-                return max(5.0, min(60.0, min(float(value), total)))
+            def clamp_meta(value: float) -> dict[str, Any]:
+                # 60 s is the product cap, not a physical limit.  The source
+                # duration is the real ceiling and is explained to the user.
+                requested = max(5.0, min(60.0, float(value)))
+                return duration_meta(requested, self.video_duration or requested)
+
+            def style_sentence(plan: dict[str, Any]) -> str:
+                bits = [
+                    f"节奏 {PACE_ZH[self.edit_style['pace']]}",
+                    f"转场 {TRANSITION_ZH[self.edit_style['transition']]}",
+                    "带动作字幕" if self.edit_style["captions"] else "无字幕",
+                ]
+                if any(clip.get("replay") for clip in plan.get("clips", [])):
+                    bits.append("含慢放回看")
+                return "，".join(bits)
 
             if is_outcome_question:
                 shot_items = [x for x in items if x["event_type"] in SHOT_LIKE_TYPES]
@@ -1089,15 +1108,17 @@ class LightweightSession:
 
             if is_shorten:
                 current = float(self.plan["target_duration"])
-                target = clamp_target(duration if duration is not None else current - 5.0)
-                if abs(target - current) < 0.01:
+                meta = clamp_meta(duration if duration is not None else current - 5.0)
+                target = meta["effective_duration"]
+                if abs(target - current) < 0.01 and not meta["duration_clamped"]:
                     return self._save(f"当前高光已经是约 {current:g} 秒，无需调整。", {"plan": self.plan})
-                self.plan["target_duration"] = target
-                self._write_plan()
+                prior = list(self.plan.get("clips", []))
+                plan = self._make_plan(prior, target, max_clips=len(prior) or None, style=self.edit_style)
                 self._trace("update_highlight_plan", {"target_duration": target, "previous_duration": current})
                 output = self._render()
+                note = (" " + meta["duration_note"]) if meta["duration_note"] else ""
                 return self._save(
-                    f"已把高光调整为约 {output['duration']:.0f} 秒，并重新生成视频。",
+                    f"已把高光调整为 {output['duration']:.1f} 秒，共 {len(plan['clips'])} 个片段（{style_sentence(plan)}）。{note}".strip(),
                     {"output": output, "plan": self.plan},
                 )
 
@@ -1126,8 +1147,9 @@ class LightweightSession:
                 if self.plan and self.plan.get("clips"):
                     lines = []
                     for index, clip in enumerate(self.plan["clips"], 1):
-                        name = clip.get("display_name") or EVENT_TYPE_ZH.get(clip.get("event_type", ""), "动作")
-                        lines.append(f"{index}. {name}，{float(clip['start_time']):.1f}–{float(clip['end_time']):.1f}s")
+                        name = clip.get("label") or clip.get("display_name") or EVENT_TYPE_ZH.get(clip.get("event_type", ""), "动作")
+                        out = clip.get("output_duration") or (float(clip["end_time"]) - float(clip["start_time"]))
+                        lines.append(f"{index}. {name}，原片 {float(clip['start_time']):.1f}–{float(clip['end_time']):.1f}s，成片约 {float(out):.1f}s")
                     summary = "当前高光包含：" + "；".join(lines) + "。这些是 AI 候选，不能确认进球、球员或回合归属。"
                 else:
                     top = sorted(items, key=self._score, reverse=True)[:5]
@@ -1153,24 +1175,27 @@ class LightweightSession:
                         return self._save("这段视频里暂时没有识别到篮球动作候选，无法生成高光。可以先换一段视频试试。", {"failure": {"stage": "NO_CANDIDATES", "retryable": True}})
                     selected = list(items)
                     fallback_note = " 没有足够可靠的投篮/扣篮候选，已改用全部篮球动作候选。"
-                max_clips = self._count_from_text(text) if any(x in text for x in ("最精彩", "保留", "片段")) else 3
-                target = clamp_target(duration if duration is not None else 20.0)
-                plan = self._make_plan(selected, target, max_clips)
+                explicit = re.search(r"(\d+|[一二两三四五六七八九十]+)\s*(?:个|段|片段|条)", text)
+                max_clips = self._count_from_text(text) if explicit else None
+                meta = clamp_meta(duration if duration is not None else 20.0)
+                plan = self._make_plan(selected, meta["effective_duration"], max_clips, style=self.edit_style)
                 output = self._render()
-                counts = Counter(c.get("display_name") or EVENT_TYPE_ZH.get(c.get("event_type", ""), "动作") for c in plan["clips"])
+                counts = Counter(c.get("label") or c.get("display_name") or EVENT_TYPE_ZH.get(c.get("event_type", ""), "动作") for c in plan["clips"])
                 summary = "、".join(f"{name} {count} 段" for name, count in counts.items())
+                note = (" " + meta["duration_note"]) if meta["duration_note"] else ""
                 if is_hypecut:
                     reply = (
-                        f"已用 HypeCut 信号生成约 {output['duration']:.0f} 秒候选集锦，共 {len(plan['clips'])} 个片段。"
+                        f"已用 HypeCut 信号生成 {output['duration']:.1f} 秒候选集锦，共 {len(plan['clips'])} 个片段"
+                        f"（{style_sentence(plan)}）。"
                         "HypeCut 只检测画面/音频变化，不代表已识别出投篮或进球，请回看确认。"
                     )
                 else:
                     reply = (
-                        f"高光已生成：约 {output['duration']:.0f} 秒，共 {len(plan['clips'])} 个片段"
+                        f"高光已生成：{output['duration']:.1f} 秒，共 {len(plan['clips'])} 个片段"
                         + (f"（{summary}）" if summary else "")
-                        + "。所有事件都是 AI 推测，建议回看原视频确认。"
+                        + f"。剪辑风格：{style_sentence(plan)}。所有事件都是 AI 推测，建议回看原视频确认。"
                     )
-                return self._save(reply + fallback_note, {"plan": plan, "output": output})
+                return self._save(reply + note + fallback_note, {"plan": plan, "output": output})
 
             return self._save(
                 "我可以帮你生成高光、找投篮候选、缩短时长或解释片段。\n"
