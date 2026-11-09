@@ -13,3 +13,9 @@ inputs/**
 # Project-local media tooling is reproducible from documented official sources;
 # do not publish large binaries or downloaded archives.
 tools/ffmpeg/
+
+# Locally cached inference models are not source artifacts.
+models/
+
+# cloudflared binary (downloaded, checksum-verified)
+tools/cloudflared/

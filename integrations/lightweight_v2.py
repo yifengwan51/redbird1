@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-from integrations.lightweight import ROOT, OUT, VIDEO_IDS, _fingerprint, _hype_segments, _json, _video_info, _windows, fit_clips_to_target, render_plan, X3D
+from integrations.lightweight import ROOT, OUT, VIDEO_IDS, _fingerprint, _hype_segments, _json, _video_info, _windows, fit_clips_to_target, render_plan, get_x3d, ANALYSIS_LOCK
 
 QUALITY_OUT = ROOT / "outputs" / "lightweight_quality_v2"
 
@@ -67,7 +67,12 @@ def _frames_v2(video: Path, start: float) -> tuple[list[Any],list[float]]:
 def audit_windows(video_id: str, config: V2Config=V2Config()) -> dict[str, Any]:
     """Run every V2 scan window and persist unfiltered X3D evidence."""
     video=VIDEO_IDS[video_id]; info=_video_info(video); segments=_hype_segments(video_id)
-    runner=X3D(); rows=[]; total_start=time.perf_counter()
+    # Shared model and lock: see integrations.lightweight.get_x3d.
+    with ANALYSIS_LOCK:
+        return _audit_windows_locked(video_id,video,info,segments,config)
+
+def _audit_windows_locked(video_id:str,video:Path,info:dict[str,Any],segments:list[dict[str,Any]],config:V2Config) -> dict[str, Any]:
+    runner=get_x3d(); rows=[]; total_start=time.perf_counter()
     if runner.device.type=='cuda': torch = __import__('torch'); torch.cuda.reset_peak_memory_stats()
     for number,(start,sampling,segment) in enumerate(_windows(video_id,info['duration']),1):
         began=time.perf_counter(); frames,timestamps=_frames_v2(video,start)

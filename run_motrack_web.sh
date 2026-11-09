@@ -28,4 +28,11 @@ if [[ "$MOTRACK_API_BASE_URL" == http://* ]]; then
   echo "WARNING: using the internal plaintext HTTP proxy; API keys are visible on the network path." >&2
   export MOTRACK_ALLOW_INSECURE_HTTP="${MOTRACK_ALLOW_INSECURE_HTTP:-1}"
 fi
+# --remote: also open a public HTTPS tunnel so a phone can use MoTrack from
+# anywhere (access code required; the server itself stays on 127.0.0.1).
+if [[ "${1:-}" == "--remote" ]]; then
+  export MOTRACK_REMOTE=1
+  echo "MoTrack: 手机访问已开启，在电脑页面点「📱 手机用」查看二维码和口令。" >&2
+fi
+export MOTRACK_PORT=8765
 exec "$PYTHON" -m uvicorn web.backend.app:app --host 127.0.0.1 --port 8765 --app-dir "$ROOT"
