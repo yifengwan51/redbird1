@@ -495,7 +495,7 @@
       stats.innerHTML = '<span><b>' + sh.attempts + '</b>次出手</span><span class="made"><b>' + sh.made + '</b>进球</span>' +
         '<span><b>' + sh.missed + '</b>没进</span>' + (sh.fg_pct != null ? '<span><b>' + sh.fg_pct + '%</b>命中率</span>' : '') +
         (sh.unknown ? '<small>另有 ' + sh.unknown + ' 次篮筐不在画面里，看不出进没进</small>' : '');
-      stats.classList.remove('hidden');
+      stats.classList.remove('hidden'); countUp(stats);
     } else stats.classList.add('hidden');
     if (!top.length) {
       $('#moments').innerHTML = '<div class="none">第一次剪辑时会自动找出精彩瞬间。</div>';
@@ -533,7 +533,7 @@
       const [r, pl] = await Promise.all([api(base + '/review'), api(base + '/players').catch(() => ({ players: [] }))]);
       if (video !== state.video) return;
       r.players = pl.players || []; r.teams = !!pl.teams;
-      state.review = r; renderReview(r);
+      state.review = r; renderReview(r); countUp($('#reviewBody'));
     } catch (e) {
       $('#reviewBody').innerHTML = '<p class="sub">' + esc(e.message) + '</p>';
     }
@@ -628,6 +628,47 @@
     sync();
   }
   $$('[data-scroller]').forEach(enhanceScroller);
+
+  /* ---------- motion helpers ---------- */
+  var calm = window.matchMedia('(prefers-reduced-motion: reduce)');
+  // Lists redrawn on every click or upload poll animate in only the first time.
+  ['#videos', '#presets', '#durations'].forEach((sel) => {
+    const el = $(sel); if (!el) return;
+    const watch = new MutationObserver(() => { watch.disconnect(); settle(); });
+    function settle() {
+      if (el.children.length) setTimeout(() => el.classList.add('settled'), 900);
+      else watch.observe(el, { childList: true });
+    }
+    settle();
+  });
+  // Dialogs: when code hides one, play the close animation first.
+  $$('.overlay').forEach((ov) => {
+    let busy = false;
+    new MutationObserver(() => {
+      const hidden = ov.classList.contains('hidden');
+      if (!hidden) { if (!ov.classList.contains('closing')) ov.dataset.shown = '1'; return; }
+      if (busy || calm.matches || ov.dataset.shown !== '1') return;
+      busy = true; ov.dataset.shown = '';
+      ov.classList.remove('hidden'); ov.classList.add('closing');
+      setTimeout(() => { ov.classList.remove('closing'); ov.classList.add('hidden'); busy = false; }, 190);
+    }).observe(ov, { attributes: true, attributeFilter: ['class'] });
+  });
+  // Numbers in stat tiles count up from zero.
+  function countUp(root) {
+    if ((calm && calm.matches) || !root) return;
+    root.querySelectorAll('.rv-tile b, .shoot-stats b').forEach((b) => {
+      const m = /^(\d+)(%?)$/.exec(b.textContent.trim()); if (!m) return;
+      const end = Number(m[1]), unit = m[2], t0 = performance.now();
+      if (!end) return;
+      b.dataset.count = '1';
+      const step = (now) => {
+        const k = Math.min(1, (now - t0) / 700);
+        b.textContent = Math.round(end * (1 - Math.pow(1 - k, 3))) + unit;
+        if (k < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+  }
 
   /* ---------- first-visit guide ---------- */
   const GUIDE_KEY = 'motrack_guide_v1';

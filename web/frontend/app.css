@@ -540,3 +540,164 @@ a.phone-btn{text-decoration:none;display:inline-flex;align-items:center}
   .rv-bests{align-items:stretch}
   .rv-best .pic{flex:none}
 }
+/* 画幅 + 内容 side by side does not fit a phone: stack them */
+@media (max-width:599px){.duo{grid-template-columns:1fr}}
+
+/* ---------- polish round 2 ---------- */
+/* style cards: every background is a dark colour, so text is white in both themes */
+.preset{color:#fff}
+.preset b{color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.35)}
+.preset small{color:rgba(255,255,255,.86)}
+.preset::before{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 40%,rgba(0,0,0,.18));pointer-events:none}
+.preset > *{position:relative}
+/* one loud button per screen: 开始剪辑. Secondary actions go soft. */
+.review-btn{color:var(--soft);background:rgba(255,122,26,.12);border:1px solid rgba(255,122,26,.38);box-shadow:none}
+.review-btn:hover{background:rgba(255,122,26,.2)}
+.chip.active{background:rgba(255,122,26,.16);border-color:var(--accent);color:var(--soft)}
+/* phones: top-bar buttons become icons so the name fits */
+@media (max-width:599px){
+  .phone-btn .lbl{display:none}
+  .phone-btn{padding:6px 9px}
+  .top{gap:8px}
+}
+/* the suggestion row scrolls sideways: fade the right edge so a cut chip reads as "more" */
+.suggest{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 36px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 36px),transparent);padding-right:28px}
+
+/* ---------- polish round 3: settings pane as one system ---------- */
+/* 画幅 / 内容: always one per row, so 3 options never run off the pane */
+.duo{grid-template-columns:1fr;gap:16px}
+.field{margin-bottom:20px}
+.label{font-size:12.5px;letter-spacing:.2px;color:var(--muted);margin-bottom:9px}
+.label::before{content:"";align-self:center;width:6px;height:6px;margin-right:7px;border-radius:2px;background:var(--grad);flex:none}
+.label{justify-content:flex-start}
+.label small{margin-left:auto}
+/* segmented controls: full width, equal buttons, accent-tinted selection */
+.seg-group{display:flex;width:100%;padding:4px;border-radius:12px;gap:2px}
+.seg-group button{flex:1 1 0;min-width:0;padding:8px 6px;border-radius:9px;text-align:center;transition:background-color .15s,color .15s}
+.seg-group button:hover:not(.active){color:var(--ink);background:rgba(255,255,255,.04)}
+.seg-group button.active{color:var(--ink);background:var(--panel);box-shadow:0 0 0 1px rgba(255,122,26,.45),0 4px 12px rgba(0,0,0,.22)}
+/* durations: one even grid instead of a ragged wrap */
+#durations{display:grid;grid-template-columns:repeat(auto-fit,minmax(60px,1fr));gap:6px}
+#durations .chip{padding:8px 0;border-radius:10px;text-align:center;font-variant-numeric:tabular-nums}
+/* modes */
+.mode{padding:12px 12px 11px;border-radius:14px}
+.mode b{font-size:14.5px}
+.mode:hover:not(.active){border-color:var(--line2)}
+/* style presets: a little taller, emoji in a soft badge, clear selection ring */
+.presets{gap:9px}
+.preset{min-height:86px;padding:10px 11px;border:0;box-shadow:0 1px 0 rgba(255,255,255,.08) inset,0 6px 16px rgba(0,0,0,.18)}
+.preset .emo{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;font-size:17px;background:rgba(255,255,255,.16)}
+.preset b{margin-top:7px;font-size:13.5px}
+.preset:not(.active){filter:saturate(.85)}
+.preset.active{box-shadow:0 0 0 2px var(--panel),0 0 0 4px var(--accent),0 10px 24px rgba(0,0,0,.3)}
+/* details section */
+details.more{padding:12px 0 0;margin-top:4px}
+details.more summary{display:flex;align-items:center;gap:6px;padding:9px 12px;border-radius:11px;background:var(--panel2);border:1px solid var(--line)}
+details.more summary::before{content:"⚙";color:var(--muted)}
+details.more[open] summary::before{content:"⚙"}
+details.more summary::after{content:"展开";margin-left:auto;font-size:12px;font-weight:600;color:var(--dim)}
+details.more[open] summary::after{content:"收起"}
+/* the main button */
+.pane-foot{padding:14px 16px 16px}
+.go{padding:14px;border-radius:15px;font-size:16.5px;letter-spacing:1px}
+/* light theme: soft hover on segmented controls */
+:root[data-theme="light"] .seg-group button:hover:not(.active){background:rgba(16,24,40,.04)}
+:root[data-theme="light"] .seg-group button.active{background:#fff}
+/* durations: 3 per row (6 options -> 3x2), never a lone chip on a row */
+#durations{grid-template-columns:repeat(3,1fr)}
+/* selected editing mode gets the same check as a selected style */
+.mode.active::after{content:"✓";position:absolute;right:9px;top:9px;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;
+  font-size:11px;font-weight:800;color:#fff;background:var(--accent)}
+.mode.vip.active::after{color:#1b1300;background:var(--gold)}
+.mode.active .lock{display:none}
+/* scroll arrows: smaller glass buttons that sit on the faded edge */
+.hs-btn{width:28px;height:28px;margin-top:-17px;font-size:15px;background:color-mix(in srgb,var(--panel) 78%,transparent);backdrop-filter:blur(6px);box-shadow:0 4px 12px rgba(0,0,0,.2)}
+.hs-btn.l{left:2px}.hs-btn.r{right:2px}
+/* empty player: faint half-court lines instead of a bare black box */
+.empty{background:
+  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 900' fill='none' stroke='%23ffffff' stroke-opacity='.06' stroke-width='4'%3E%3Crect x='60' y='60' width='1480' height='780' rx='8'/%3E%3Cline x1='800' y1='60' x2='800' y2='840'/%3E%3Ccircle cx='800' cy='450' r='110'/%3E%3Crect x='60' y='300' width='300' height='300'/%3E%3Crect x='1240' y='300' width='300' height='300'/%3E%3Cpath d='M60 150 H170 A300 300 0 0 1 170 750 H60'/%3E%3Cpath d='M1540 150 H1430 A300 300 0 0 0 1430 750 H1540'/%3E%3C/svg%3E") center/cover no-repeat,
+  radial-gradient(420px 240px at 50% 42%,rgba(255,122,26,.18),transparent 70%),#080c16}
+.empty > div{padding:18px 26px;border-radius:18px;background:rgba(8,12,22,.55);backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.06)}
+
+/* ================= motion ================= */
+:root{--ease:cubic-bezier(.22,1,.36,1);--ease-in:cubic-bezier(.55,0,.75,.3)}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes zoomIn{from{opacity:0;transform:translateY(18px) scale(.96)}to{opacity:1;transform:none}}
+@keyframes zoomOut{to{opacity:0;transform:translateY(10px) scale(.97)}}
+@keyframes fadeOut{to{opacity:0}}
+@keyframes popIn{0%{opacity:0;transform:scale(.6)}70%{transform:scale(1.12)}100%{opacity:1;transform:scale(1)}}
+@keyframes glow{0%,100%{box-shadow:0 10px 28px rgba(246,196,83,.25)}50%{box-shadow:0 12px 36px rgba(246,196,83,.5)}}
+@keyframes sheen{from{transform:translateX(-120%) skewX(-20deg)}to{transform:translateX(320%) skewX(-20deg)}}
+
+/* first paint: the page builds up top to bottom */
+.top{animation:fadeIn .5s var(--ease) both}
+.app > *:nth-child(1){animation:rise .6s var(--ease) .05s both}
+.app > *:nth-child(2){animation:rise .6s var(--ease) .15s both}
+.player{animation:rise .6s var(--ease) .1s both}
+.moments-card{animation:rise .6s var(--ease) .22s both}
+.side > .pane,.side > .tabs{animation:rise .6s var(--ease) .18s both}
+
+/* dialogs: scrim fades, card zooms up; .closing plays the reverse */
+.overlay:not(.hidden){animation:fadeIn .22s ease both}
+.overlay:not(.hidden) > .dialog{animation:zoomIn .38s var(--ease) both}
+.overlay.closing{animation:fadeOut .18s ease both;pointer-events:none}
+.overlay.closing > .dialog{animation:zoomOut .18s var(--ease-in) both}
+
+/* tabs / panes / views switch with a short fade */
+.pane.active{animation:fadeIn .28s ease both}
+.screen video:not(.hidden){animation:fadeIn .35s ease both}
+.empty:not(.hidden) > div{animation:rise .5s var(--ease) both}
+.working:not(.hidden){animation:fadeIn .2s ease both}
+.working:not(.hidden) .working-box{animation:zoomIn .4s var(--ease) both}
+
+/* lists appear one after another */
+.vcard,.moment,.preset,.rv-best,.rv-shot,.rv-tile,.seg-item,.rv-player{animation:rise .5s var(--ease) both}
+:is(.vcard,.moment,.preset,.rv-best,.rv-shot,.rv-tile,.seg-item,.rv-player):nth-child(2){animation-delay:.04s}
+:is(.vcard,.moment,.preset,.rv-best,.rv-shot,.rv-tile,.seg-item,.rv-player):nth-child(3){animation-delay:.08s}
+:is(.vcard,.moment,.preset,.rv-best,.rv-shot,.rv-tile,.seg-item,.rv-player):nth-child(4){animation-delay:.12s}
+:is(.vcard,.moment,.preset,.rv-best,.rv-shot,.rv-tile,.seg-item,.rv-player):nth-child(5){animation-delay:.16s}
+:is(.vcard,.moment,.preset,.rv-best,.rv-shot,.rv-tile,.seg-item,.rv-player):nth-child(6){animation-delay:.2s}
+:is(.vcard,.moment,.preset,.rv-best,.rv-shot,.rv-tile,.seg-item,.rv-player):nth-child(n+7){animation-delay:.24s}
+/* review sections slide in after the tiles */
+.rv-bestbox{animation:rise .55s var(--ease) .12s both}
+.rv-line,.rv-notes,.rv-recap,.rv-table{animation:rise .55s var(--ease) .2s both}
+.rv-dot{animation:popIn .45s var(--ease) both}
+.rv-dot:nth-child(odd){animation-delay:.25s}.rv-dot:nth-child(even){animation-delay:.35s}
+
+/* hover and press feedback */
+.vcard,.moment,.preset,.mode,.rv-best,.rv-shot,.rv-player,.chip,.btn,.phone-btn,.review-btn,.help-btn,.theme-btn,.vip-pill,.suggest button{
+  transition:transform .25s var(--ease),box-shadow .25s var(--ease),border-color .2s,background-color .2s,color .2s,filter .2s}
+.moment:hover,.rv-best:hover,.vcard:hover:not(:disabled){transform:translateY(-3px)}
+.moment:hover,.rv-best:hover{box-shadow:0 14px 30px rgba(0,0,0,.3)}
+.moment .pic img,.rv-best .pic img{transition:transform .5s var(--ease)}
+.moment:hover .pic img,.rv-best:hover .pic img{transform:scale(1.06)}
+.preset:hover{transform:translateY(-3px) scale(1.02)}
+.mode:hover{transform:translateY(-2px)}
+:is(button,.btn,a.phone-btn):active:not(:disabled){transform:scale(.96)!important;transition-duration:.08s}
+.seg-group button,.chip{transition:background-color .25s var(--ease),color .2s,box-shadow .25s var(--ease),transform .15s}
+.preset.active::after,.mode.active::after{animation:popIn .35s var(--ease) both}
+.switch input,.switch input::after{transition:all .25s var(--ease)}
+details.more[open] > :not(summary){animation:rise .35s var(--ease) both}
+
+/* main button: a light sweep on hover, a soft pulse when VIP */
+.go{position:relative;overflow:hidden}
+.go::after{content:"";position:absolute;top:0;bottom:0;left:0;width:30%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);transform:translateX(-120%) skewX(-20deg);pointer-events:none}
+.go:hover:not(:disabled)::after{animation:sheen .8s ease}
+.go.vip:not(:disabled){animation:glow 2.8s ease-in-out infinite}
+
+/* toast: spring in */
+.toast{transition:opacity .25s ease,transform .4s var(--ease)}
+
+/* chat bubbles: a bit more lift */
+@keyframes pop{from{opacity:0;transform:translateY(8px) scale(.97)}}
+.msg{animation:pop .3s var(--ease) both}
+
+/* counting numbers keep their width */
+[data-count]{font-variant-numeric:tabular-nums}
+
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
+/* lists that redraw on every click/poll play their entrance once */
+.settled > *{animation:none!important}
+.settled > .preset.active::after,.settled > .mode.active::after{animation:popIn .35s var(--ease) both!important}
