@@ -75,18 +75,20 @@ def score(events: list[dict[str, Any]], db: np.ndarray | None = None) -> list[di
         g = _group(e)
         t = float(e.get("peak_time", (float(e["start_time"]) + float(e["end_time"])) / 2))
         sig = {"crowd": round(crowd(db, t), 3), "range": 0.0, "streak": 0.0, "kind": 0.0}
+        count = 0
         if g in ("made", "missed", "unknown"):
             sig["range"] = round(min(1.0, float(e.get("shot_range") or 0.0) / RANGE_FULL), 3)
             sig["kind"] = 1.0 if e.get("shot_kind") == "layup" else 0.0
-            key = e.get("team")
+            key = None  # game-wide: team labels are not reliable yet (players.ENABLED)
             if g == "made":
                 run[key] = run.get(key, 0) + 1
                 sig["streak"] = round(min(1.0, (run[key] - 1) / 3), 3)
+                count = run[key]
             elif g == "missed":
                 run[key] = 0
         bonus = 0.0 if e.get("uncertain") else sum(WEIGHTS[k] * v for k, v in sig.items())
         old = float(e.get("final_ranking_score", e.get("raw_model_score", 0.0)) or 0.0)
         new = MADE_BASE + SPAN * bonus if g == "made" else old
-        e["highlight"] = {"score": round(new, 3), "bonus": round(bonus, 3), "signals": sig}
+        e["highlight"] = {"score": round(new, 3), "bonus": round(bonus, 3), "signals": sig, "run": count}
         e["final_ranking_score"] = round(new, 3)
     return events

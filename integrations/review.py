@@ -45,6 +45,38 @@ def _streaks(shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for r in runs]
 
 
+BEST_N = 5
+
+
+def _reason(e: dict[str, Any]) -> str:
+    """One plain sentence on why a play made the top list (from its ranking signals)."""
+    hl = e.get("highlight") or {}
+    sig = hl.get("signals") or {}
+    bits = []
+    if sig.get("range", 0) >= 0.8:
+        bits.append("远距离命中")
+    elif e.get("shot_kind") == "layup":
+        bits.append("突破上篮得手")
+    if hl.get("run", 0) >= 2:
+        bits.append(f"全场连续第 {hl['run']} 个进球")
+    if sig.get("crowd", 0) >= 0.5:
+        bits.append("现场欢呼最响")
+    return "，".join(bits) or "干净利落的一记命中"
+
+
+def best(events: list[dict[str, Any]], n: int = BEST_N) -> list[dict[str, Any]]:
+    """Top made shots by highlight score (ties: earlier first)."""
+    made = [e for e in events if e.get("evidence_source") == "LOCAL_DETECTOR" and e.get("outcome") == "made"]
+    made.sort(key=lambda e: (-float(e.get("final_ranking_score") or 0), float(e["start_time"])))
+    out = []
+    for rank, e in enumerate(made[:n], 1):
+        peak = float(e.get("peak_time", e["start_time"]))
+        out.append({"rank": rank, "time": float(e["start_time"]), "peak": peak, "clock": _clock(float(e["start_time"])),
+                    "label": KIND_ZH.get(e.get("shot_kind", "jump"), "投篮") + " · 进了", "reason": _reason(e),
+                    "score": round(float(e.get("final_ranking_score") or 0), 3)})
+    return out
+
+
 def build(video_id: str, events: list[dict[str, Any]], duration: float) -> dict[str, Any]:
     shots = sorted(
         ({"time": float(e["start_time"]), "kind": e.get("shot_kind", "jump"),
@@ -95,7 +127,7 @@ def build(video_id: str, events: list[dict[str, Any]], duration: float) -> dict[
         if busiest["attempts"] >= 3:
             notes.append(f"出手最密集的是 {busiest['label']}（{busiest['attempts']} 次）。")
     return {"video_id": video_id, "duration": round(duration, 1), "stats": stats, "shots": shots, "moments": others,
-            "periods": periods, "period_seconds": size, "streaks": _streaks(shots), "notes": notes,
+            "periods": periods, "period_seconds": size, "best": best(events), "streaks": _streaks(shots), "notes": notes,
             "caveat": "数据由模型自动识别，可能有误；看不出结果的出手不计入命中率。"}
 
 

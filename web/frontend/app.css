@@ -149,7 +149,7 @@ img{display:block}
 /* moments */
 .moments-card{padding:14px 16px 12px;border-radius:20px;background:var(--panel);border:1px solid var(--line);box-shadow:var(--card-shadow)}
 .row-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:10px}
-.row-head h3{margin:0;font-size:15px}
+.row-head h3{margin:0;font-size:15px;white-space:nowrap}
 .row-head span{color:var(--dim);font-size:12px}
 .moments{display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin;scrollbar-color:var(--panel3) transparent}
 .moment{flex:none;width:168px;text-align:left;border-radius:12px;overflow:hidden;background:var(--panel2);border:1px solid var(--line);transition:transform .15s,border-color .15s}
@@ -161,8 +161,8 @@ img{display:block}
 .moment .out-tag{position:absolute;left:6px;top:6px;z-index:1;font-size:10px;font-weight:800;padding:1px 6px;border-radius:5px;color:#fff;background:rgba(10,14,24,.78);border:1px solid var(--line2)}
 .moment .out-tag.made{background:linear-gradient(135deg,#22c55e,#16a34a);border-color:transparent}
 .shoot-stats{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px;margin:-2px 0 10px;font-size:12px;color:var(--muted)}
-.shoot-stats b{font-size:17px;color:var(--text);margin-right:3px}
-.shoot-stats .made b{color:#4ade80}
+.shoot-stats b{font-size:17px;color:var(--ink);margin-right:3px}
+.shoot-stats .made b{color:var(--green)}
 .shoot-stats small{flex-basis:100%;color:var(--dim);font-size:11px}
 .moment b{display:block;font-size:13px}
 .moment .stars{color:var(--soft);font-size:11px;letter-spacing:1px}
@@ -424,7 +424,7 @@ a.phone-btn{text-decoration:none;display:inline-flex;align-items:center}
 .help-btn{flex:none;width:30px;height:30px;border-radius:50%;font-weight:800;font-size:15px;color:var(--muted);background:var(--panel3);border:1px solid var(--line2)}
 .help-btn:hover{color:var(--ink);border-color:var(--accent)}
 .phone-btn{position:relative}
-.badge{position:absolute;top:-5px;right:-5px;min-width:18px;height:18px;padding:0 5px;border-radius:999px;font-style:normal;font-size:11px;line-height:18px;text-align:center;color:#fff;background:var(--accent2);box-shadow:0 0 0 2px var(--bg)}
+.phone-btn .badge{position:absolute;top:-5px;right:-5px;min-width:18px;height:18px;padding:0 5px;border-radius:999px;font-style:normal;font-size:11px;line-height:18px;text-align:center;color:#fff;background:var(--accent2);box-shadow:0 0 0 2px var(--bg)}
 .guide{position:fixed;inset:0;z-index:80}
 .guide-hole{position:fixed;border-radius:16px;box-shadow:0 0 0 9999px var(--scrim);border:2px solid var(--accent);transition:all .25s ease;pointer-events:none}
 .guide-hole.center{left:50%;top:40%;width:0;height:0;border:0}
@@ -490,3 +490,53 @@ a.phone-btn{text-decoration:none;display:inline-flex;align-items:center}
 .rv-player i{font-style:normal;font-size:11px;color:var(--muted)}
 .rv-player small{color:var(--dim);font-size:12px}
 .rv-pnote{margin:4px 0 0}
+
+/* ---------- review: header area polish ---------- */
+.rv-tile{position:relative;overflow:hidden;padding:12px 6px 10px;box-shadow:var(--card-shadow)}
+.rv-tile b{font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+.rv-tile.made{background:linear-gradient(180deg,rgba(61,220,151,.12),transparent 70%),var(--panel2);border-color:rgba(61,220,151,.28)}
+.rv-tile.pct{background:linear-gradient(180deg,rgba(255,122,26,.13),transparent 70%),var(--panel2);border-color:rgba(255,122,26,.3)}
+.rv-tile.pct b{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.rv-h{display:flex;align-items:center;gap:8px;margin:22px 0 10px;color:var(--ink);font-size:14px}
+.rv-h::before{content:"";width:3px;height:14px;border-radius:2px;background:var(--grad)}
+
+/* ---------- review: 本场最佳 ---------- */
+.rv-bestbox{margin-top:16px;padding:14px;border-radius:18px;border:1px solid rgba(246,196,83,.32);
+  background:radial-gradient(500px 180px at 0% 0%,rgba(246,196,83,.14),transparent 70%),var(--panel2);box-shadow:var(--card-shadow)}
+.rv-besthead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.rv-besthead h4{margin:0;font-size:16px}
+.rv-besthead p{margin:2px 0 0;color:var(--muted);font-size:12px}
+.rv-bestgo{width:auto;margin:0;padding:9px 16px;font-size:13px}
+.rv-bests{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.rv-best{display:flex;flex-direction:column;min-width:0;text-align:left;border-radius:14px;overflow:hidden;background:var(--panel);border:1px solid var(--line);transition:transform .15s,border-color .15s,box-shadow .2s}
+.rv-best:hover,.rv-best:focus-visible{transform:translateY(-2px);border-color:var(--accent);box-shadow:0 10px 26px rgba(0,0,0,.28)}
+.rv-best.first{border-color:rgba(246,196,83,.6)}
+.rv-best .pic{position:relative;aspect-ratio:16/9;background:#000}
+.rv-best .pic img{width:100%;height:100%;object-fit:cover}
+.rv-best .pic::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 45%,rgba(0,0,0,.7))}
+.rv-best .rank{position:absolute;left:6px;top:5px;z-index:1;font-style:normal;font-size:18px;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}
+.rv-best .rank:not(:empty){min-width:22px}
+.rv-best .play{position:absolute;left:50%;top:50%;z-index:1;width:34px;height:34px;margin:-17px 0 0 -17px;display:grid;place-items:center;border-radius:50%;
+  font-style:normal;font-size:12px;color:#fff;background:rgba(0,0,0,.5);backdrop-filter:blur(4px);opacity:0;transition:opacity .15s}
+.rv-best:hover .play,.rv-best:focus-visible .play{opacity:1}
+.rv-best time{position:absolute;right:6px;bottom:5px;z-index:1;font-size:11px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.rv-best .info{display:flex;flex-direction:column;gap:2px;padding:8px 10px 10px}
+.rv-best .info b{font-size:13px}
+.rv-best .info small{color:var(--muted);font-size:11px;line-height:1.45}
+@media (max-width:899px){
+  .rv-bests{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -14px;padding:0 14px 4px;scrollbar-width:none}
+  .rv-bests::-webkit-scrollbar{display:none}
+  .rv-best{flex:0 0 62%;scroll-snap-align:start}
+  .rv-bestgo{width:100%;justify-content:center}
+}
+/* the player area is always dark, so its placeholder keeps light text in both themes */
+.empty{color:#a9b4c8}
+.empty b{color:#f2f5fb}
+@media (max-width:899px){
+  .row-head{flex-wrap:wrap;align-items:center;row-gap:4px}
+  .row-head h3{order:1}
+  .row-head .review-btn{order:2;margin-left:auto}
+  .row-head span{order:3;flex-basis:100%}
+  .rv-bests{align-items:stretch}
+  .rv-best .pic{flex:none}
+}

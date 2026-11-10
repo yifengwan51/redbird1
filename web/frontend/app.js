@@ -553,12 +553,22 @@
       '<img loading="lazy" alt="" src="/api/v1/videos/' + encodeURIComponent(r.video_id) + '/players/' + p.id + '/photo">' +
       '<span><b>' + p.number + ' 号</b>' + (r.teams && p.team != null ? '<i>' + TEAM[p.team] + '</i>' : '') +
       '<small>' + p.attempts + ' 次出手 · 进 ' + p.made + (p.fg_pct != null ? ' · ' + p.fg_pct + '%' : '') + '</small></span></button>').join('');
+    const MEDAL = ['🥇', '🥈', '🥉'];
+    const bestList = r.best || [];
+    const best = bestList.map((b) => '<button class="rv-best' + (b.rank === 1 ? ' first' : '') + '" type="button" data-t="' + b.time + '">' +
+      '<span class="pic"><img loading="lazy" alt="" src="/api/v1/videos/' + encodeURIComponent(r.video_id) + '/frame?t=' + b.peak + '">' +
+      '<i class="rank">' + (MEDAL[b.rank - 1] || b.rank) + '</i><i class="play">▶</i><time>' + esc(b.clock) + '</time></span>' +
+      '<span class="info"><b>' + esc(b.label) + '</b><small>' + esc(b.reason) + '</small></span></button>').join('');
+    const bestBlock = bestList.length ? '<section class="rv-bestbox"><div class="rv-besthead"><div><h4>🏆 本场最佳</h4>' +
+      '<p>按现场欢呼、出手距离和连续得分自动排出</p></div><button class="go rv-bestgo" id="bestGo" type="button" data-n="' + bestList.length + '">🎬 一键生成最佳 ' +
+      bestList.length + ' 球集锦</button></div><div class="rv-bests" >' + best + '</div></section>' : '';
     const notes = r.notes.concat(r.streaks.map((x) => x.text)).map((n) => '<li>' + esc(n) + '</li>').join('');
     const recap = r.recap ? '<div class="rv-recap">' + esc(r.recap) + '</div>'
       : '<div class="rv-recap"><p class="sub" style="margin:0 0 10px">AI 根据这些数据写一段教练视角的复盘，指出关键时段并给出建议。</p>' +
         '<button class="go vip" id="recapGo" type="button">👑 生成 AI 复盘</button></div>';
     $('#reviewBody').innerHTML =
-      '<div class="rv-tiles">' + tile(s.attempts, '出手') + tile(s.made, '进球', 'made') + tile(s.missed, '没进') + tile(s.fg_pct != null ? s.fg_pct + '%' : '—', '命中率') + '</div>' +
+      '<div class="rv-tiles">' + tile(s.attempts, '出手') + tile(s.made, '进球', 'made') + tile(s.missed, '没进') + tile(s.fg_pct != null ? s.fg_pct + '%' : '—', '命中率', 'pct') + '</div>' +
+      bestBlock +
       '<div class="rv-h">出手时间线 · 点一个点看原片</div>' +
       (r.shots.length ? '<div class="rv-line"><div class="axis"></div>' + dots + '</div><div class="rv-ticks">' + ticks + '</div>' +
         '<div class="rv-legend"><span><i class="m"></i>进了</span><span><i class="x"></i>没进</span><span><i></i>看不出</span></div>'
@@ -1065,6 +1075,8 @@
   $('#reviewDialog').addEventListener('click', (e) => {
     if (e.target.id === 'reviewDialog') { $('#reviewDialog').classList.add('hidden'); return; }
     if (e.target.closest('#recapGo')) { makeRecap(); return; }
+    const bg = e.target.closest('#bestGo');
+    if (bg) { $('#reviewDialog').classList.add('hidden'); showPane('chat'); send('把本场最精彩的' + bg.dataset.n + '个进球剪成集锦'); return; }
     const pl = e.target.closest('[data-player]');
     if (pl) { $('#reviewDialog').classList.add('hidden'); send('只看' + pl.dataset.player + '号的集锦'); return; }
     const b = e.target.closest('[data-t]'); if (!b) return;

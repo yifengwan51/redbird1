@@ -38,7 +38,7 @@ class HighlightTest(unittest.TestCase):
         self.assertEqual(ev[0]["final_ranking_score"], 1.25)
 
     def test_streak(self):
-        ev = [shot(t, "made", team=0) for t in (10, 20, 30)]
+        ev = [shot(t, "made") for t in (10, 20, 30)]
         highlight.score(ev, None)
         self.assertEqual([e["highlight"]["signals"]["streak"] for e in ev], [0.0, 0.333, 0.667])
 
