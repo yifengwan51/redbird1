@@ -1,8 +1,8 @@
 // MoTrack service worker: makes the page installable and opens the shell
 // offline.  Network first, so a fresh deploy is never hidden behind a cache;
 // API calls and videos are never cached.
-const CACHE = 'motrack-shell-v1';
-const SHELL = ['/app/index.html', '/app/app.css', '/app/app.js', '/app/manifest.json', '/app/icons/icon-192.png'];
+const CACHE = 'motrack-shell-v4';
+const SHELL = ['/app/index.html', '/app/app.css', '/app/app.js', '/app/theme.js', '/app/manifest.json', '/app/icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}).then(() => self.skipWaiting()));

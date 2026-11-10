@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#070a12">
+<link rel="icon" href="/app/icons/icon-192.png">
+<link rel="manifest" href="/app/admin-manifest.json">
+<link rel="apple-touch-icon" href="/app/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="MoTrack 管理">
+<script src="/app/theme.js"></script>
+<title>MoTrack 管理</title>
+<link rel="stylesheet" href="/app/app.css">
+<style>
+  body{background:var(--bg)}
+  .adm{max-width:960px;margin:0 auto;padding:16px 16px 48px}
+  .adm-top{display:flex;align-items:center;gap:12px;margin:4px 0 18px}
+  .adm-top img{width:36px;height:36px;border-radius:10px}
+  .adm-top h1{margin:0;font-size:20px;flex:1}
+  .adm-top a{color:var(--muted);text-decoration:none;font-size:14px}
+  .card{padding:16px;border-radius:18px;background:var(--panel);border:1px solid var(--line);margin-bottom:14px}
+  .card h2{margin:0 0 12px;font-size:16px}
+  .site{display:grid;grid-template-columns:150px 1fr;gap:16px;align-items:start}
+  .site img{width:150px;height:150px;border-radius:12px;background:#fff}
+  .site .url{word-break:break-all;font-weight:700}
+  .site .url a{color:var(--accent)}
+  .row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}
+  .row label{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:14px}
+  .row input[type=number]{width:72px;padding:7px 9px;border-radius:10px;background:var(--panel2);border:1px solid var(--line2);color:var(--ink)}
+  .btn-s{padding:7px 12px;border-radius:10px;font-size:13px;font-weight:700;background:var(--panel3);color:var(--ink);border:1px solid var(--line2)}
+  .btn-s.ok{background:rgba(61,220,151,.16);color:var(--green);border-color:rgba(61,220,151,.35)}
+  .btn-s.no{background:rgba(255,107,107,.12);color:var(--red);border-color:rgba(255,107,107,.3)}
+  .btn-s.main{background:var(--grad);color:#fff;border-color:transparent}
+  .tabs2{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .tabs2 button{padding:7px 12px;border-radius:999px;font-size:13px;font-weight:700;color:var(--muted);background:var(--panel2);border:1px solid var(--line)}
+  .tabs2 button.active{color:var(--ink);background:var(--panel3);border-color:var(--line2)}
+  .tabs2 i{font-style:normal;margin-left:4px;padding:0 6px;border-radius:999px;background:var(--accent2);color:#fff;font-size:11px}
+  .list{display:flex;flex-direction:column;gap:8px}
+  .item{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:12px;border-radius:14px;background:var(--panel2);border:1px solid var(--line)}
+  .item .who{flex:1;min-width:180px}
+  .item .who b{font-size:15px}
+  .item .who small{display:block;color:var(--dim);font-size:12px;margin-top:2px}
+  .item .acts{display:flex;gap:6px}
+  .none{color:var(--dim);padding:18px;text-align:center}
+  .stat{color:var(--muted);font-size:13px}
+  .switch-l{display:flex;align-items:center;gap:8px;font-weight:700}
+  @media (max-width:599px){.site{grid-template-columns:1fr}.site img{margin:0 auto}
+    .item .acts{width:100%}.item .acts .btn-s{flex:1;padding:11px 8px;font-size:14px}
+    .row label{width:100%;justify-content:space-between}.adm-top h1{font-size:18px}}
+  .phone-card{border-color:rgba(255,122,26,.35)}
+</style>
+</head>
+<body>
+<main class="adm">
+  <div class="adm-top"><img src="/app/icons/icon-192.png" alt=""><h1>MoTrack 管理</h1><button class="theme-btn" data-theme-toggle type="button">🌓</button><a href="/app/index.html">← 回到剪辑</a></div>
+
+  <section class="card phone-card hidden" id="phoneCard">
+    <h2>📱 用手机随时管理</h2>
+    <div class="site">
+      <img id="adminQr" alt="手机扫码登录管理页面">
+      <div>
+        <div class="url" id="adminUrl"></div>
+        <p class="stat">用手机相机扫左边的码，直接登录这个管理页面，不用输入口令。打开后在浏览器菜单里点「添加到主屏幕」，以后像 App 一样随时打开。这个码等于钥匙，只给自己扫。</p>
+        <p class="stat" id="devices"></p>
+        <div class="row"><button class="btn-s no" id="signoutAll" type="button">让所有手机退出登录</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>🌐 网站地址（发给别人）</h2>
+    <div class="site">
+      <img id="siteQr" alt="网站二维码">
+      <div>
+        <div class="url" id="siteUrl">读取中…</div>
+        <p class="stat" id="siteNote">任何人打开这个地址都能使用基础剪辑；AI 功能免费体验后需要你审核。这个二维码只是网址，不含你的管理员登录。</p>
+        <div class="row">
+          <button class="btn-s" id="copyUrl" type="button">复制网址</button>
+          <button class="btn-s main hidden" id="startTunnel" type="button">开启公网访问</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>⚙️ 设置</h2>
+    <label class="switch-l"><input type="checkbox" id="public"> 开放给所有人（关闭后，访客需要输入访问口令才能进入）</label>
+    <div class="row">
+      <label>每人免费 AI 次数 <input type="number" id="free" min="0" max="100"></label>
+      <label>每个网络每天最多免费 <input type="number" id="ipFree" min="1" max="1000"></label>
+      <label>访客最多上传视频 <input type="number" id="uploads" min="0" max="30"></label>
+      <button class="btn-s main" id="save" type="button">保存</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>👥 访客审核</h2>
+    <p class="stat" id="notifyRow"><button class="btn-s" id="notify" type="button">🔔 有新申请时提醒我</button></p>
+    <div class="tabs2" id="tabs">
+      <button class="active" data-s="pending" type="button">待审核<i id="nPending" class="hidden">0</i></button>
+      <button data-s="approved" type="button">已通过</button>
+      <button data-s="rejected" type="button">已拒绝</button>
+      <button data-s="free" type="button">体验中</button>
+    </div>
+    <div class="list" id="list"><div class="none">读取中…</div></div>
+  </section>
+</main>
+<div class="toast" id="toast" role="status"></div>
+<script src="/app/admin.js"></script>
+</body>
+</html>

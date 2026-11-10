@@ -96,17 +96,28 @@ SYSTEM_PROMPT = """你是 MoTrack 的 AI 剪辑师，帮球迷把篮球视频剪
 - 用户想生成或修改集锦时，调用 edit_highlight，只填这次要改的字段；之前去掉或保留的选择会自动沿用，不要重复填。
 - 常见说法："去掉第 2 段"→ remove_segments=[2]；"一定要有 1:17 那球"→ pin_moments 填那个时刻；"恢复原样"→ reset_choices=true；"只要后半段"→ start_after；"3 段就够"→ clip_count；"节奏快点"→ pace=tight；"加个慢动作"→ slow_motion=true；"来点燃的音乐"→ music=hype；"做出电影感"→ look=cinematic；"加点特效"→ zoom=true 并 transition=flash。
 - 需要确认画面内容时（“是不是真的扣篮”“哪一球最精彩”“去掉没看点的”），先调用 inspect_moments 看截图，再回答或剪辑；标了“AI看过”的不用再看。
+- 一句话里有好几个要求时（“去掉第 2 段，节奏快点，最精彩的放最后”），一次 edit_highlight 把所有字段都填上，不要分几次剪。
+- 顺序：“最精彩的放最后/压轴”→ order=climax；“精彩的先放”→ order=best_first；“按时间顺序”→ order=time。
+- 改某段字幕：segment_captions={{"2":"压哨三分"}}。用户说“这段/那段”且消息开头写了“我点选了第 N 段”，就指第 N 段。
+- 用户说“撤销”“改回去”“还是刚才的好”→ 调用 undo_edit。
+- 问比赛表现、命中率、哪段时间最好、谁更热时，先调用 get_game_stats 拿数字再回答，不要凭印象。
+- 剪完后用一句话说清改了什么、现在多长，再给一个具体的下一步建议。
 - 只是聊天、提问或让你解释时，直接回答，不要调用工具。
 - 配乐：内置 hype（热血电子）、groove（嘻哈律动）、chill（轻快）三首，用了内置配乐会自动卡点剪辑；用户上传过的音乐可以用 upload:xxxx。指定某首具体的歌（比如周杰伦的歌）做不到，请用户自己上传。
 - 特效：调色 look、推镜 zoom、闪白转场 transition=flash、片头标题 title。
-- 做不到的（按球员或球队筛选、只要确认进球的、换背景、加贴纸）要坦白说明，并给出最接近的做法。
+- 想要"进球集锦""只要进的"时，调用 edit_highlight 设 focus=made（只放检测到的进球）；想要所有出手用 focus=shots。
+- 被问"哪段时间投得最好""后半段表现怎么样""有没有连续得分"时，用下面"分时段"和"连续"的数字直接回答，带上原片时间。
+- 做不到的（按球员或球队筛选、换背景、加贴纸）要坦白说明，并给出最接近的做法。
 
 事实边界：
-- 候选时刻都是 AI 推测的"疑似"动作，不能确认是否进球、谁投的、哪支球队。绝不编造比分、球员或结果。
+- 每个投篮时刻都带有自动检测的结果：进球、没进，或"看不出"（篮筐不在画面里）。
+- 被问"进了几个""命中率""投得怎么样"时，第一句直接报数：出手几次、进几个、没进几个、命中率，再列出进球的原片时间；最后用半句话说明还有几次看不出结果、原因是篮筐不在画面里。不要说"不敢说""只能确认"这类话，也不要去猜看不出的那些。
+- 比分、谁投的、哪支球队都识别不了，绝不编造。
 - 有画面描述的时刻可以引用描述，但要说"看起来"。
 - 集锦最长 60 秒，也不能超过原片长度。
 
 视频：{video_name}，原片 {duration} 秒。
+投篮统计（自动检测）：{shooting}
 候选时刻（时间、动作、强度、描述）：
 {moments}
 
@@ -125,7 +136,7 @@ EDIT_TOOL = {
             "type": "object",
             "properties": {
                 "duration": {"type": "number", "description": "成片秒数，5–60"},
-                "focus": {"type": "string", "enum": ["shots", "all"], "description": "shots=只要投篮/扣篮，all=所有精彩动作"},
+                "focus": {"type": "string", "enum": ["made", "shots", "all"], "description": "made=只要检测到的进球，shots=只要投篮/扣篮，all=所有精彩动作"},
                 "clip_count": {"type": "integer", "description": "最多几段；0 表示自动"},
                 "remove_segments": {"type": "array", "items": {"type": "integer"}, "description": "从当前集锦去掉第几段（按当前编号，从 1 开始）"},
                 "remove_moments": {"type": "array", "items": {"type": "string"}, "description": "不要用的候选时刻 id，如 m08"},
@@ -141,6 +152,10 @@ EDIT_TOOL = {
                 "music": {"type": "string", "description": "配乐：none=原声，hype=热血电子，groove=嘻哈律动，chill=轻快；或用户上传的 upload:xxxx"},
                 "title": {"type": ["string", "null"], "description": "片头标题，最多 20 字；\"\"=不要标题；null=默认"},
                 "captions": {"type": "boolean"},
+                "order": {"type": "string", "enum": ["time", "best_first", "climax"],
+                          "description": "片段顺序：time=按原片时间，best_first=最精彩的放最前，climax=越往后越精彩、最好的压轴"},
+                "segment_captions": {"type": "object", "additionalProperties": {"type": "string"},
+                                     "description": "改某几段的字幕，键是当前段号（\"2\"），值是新字幕（最多 16 字）"},
                 "slow_motion": {"type": "boolean"},
             },
             "additionalProperties": False,
@@ -150,7 +165,7 @@ EDIT_TOOL = {
 # ---------- AI frame review ----------
 INSPECT_DIR = ROOT / "outputs" / "ai_inspect"
 INSPECT_BATCH = 4            # moments per contact sheet (one image per request)
-MAX_TOOL_ROUNDS = 3
+MAX_TOOL_ROUNDS = 5
 ACTIONS = ("扣篮", "投篮", "上篮", "盖帽", "抢断", "传球", "运球", "快攻", "庆祝", "观众", "回放", "广告", "其他")
 SHOT_ACTIONS = {"扣篮", "投篮", "上篮"}
 SKIP_ACTIONS = {"观众", "回放", "广告"}
@@ -259,6 +274,24 @@ INSPECT_TOOL = {
 }
 
 
+STATS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_game_stats",
+        "description": "取整场的投篮统计：出手、进球、命中率、分时段、连续命中/没进、每次出手的时间和结果。回答比赛表现类问题前先调用。",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+}
+UNDO_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "undo_edit",
+        "description": "撤销上一次 edit_highlight 的修改，恢复到之前的集锦。用户说“撤销”“改回去”“刚才那样好”时调用。",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+}
+
+
 def _clock(seconds: float) -> str:
     seconds = max(0.0, float(seconds))
     return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
@@ -309,6 +342,30 @@ class LLMEditor:
         score = float(item.get("raw_model_score", 0.0))
         return "强" if score >= 0.6 else "中" if score >= 0.35 else "弱"
 
+    def _shooting_text(self) -> str:
+        from .shots import summary
+        s = summary(self.pool)
+        if not s["attempts"]:
+            return "这段视频没有检测到出手。"
+        made = [m for m in self.pool if m.get("outcome") == "made"]
+        text = f"出手 {s['attempts']} 次，进 {s['made']} 个，没进 {s['missed']} 个，看不出 {s['unknown']} 个"
+        if s["fg_pct"] is not None:
+            text += f"，能判断的命中率 {s['fg_pct']}%"
+        if made:
+            text += "；进球在原片 " + "、".join(_clock(float(m["start_time"])) for m in made)
+        text += "。"
+        try:
+            from . import review as review_mod
+            report = review_mod.build(self.video_id, self.pool, float(self.session.video_duration or 0) or 1.0)
+            busy = [p for p in report["periods"] if p["attempts"]]
+            if busy:
+                text += "\n分时段：" + "；".join(f"{p['label']} 出手{p['attempts']} 进{p['made']} 没进{p['missed']}" for p in busy) + "。"
+            if report["streaks"]:
+                text += "\n连续：" + "；".join(x["text"] for x in report["streaks"]) + "。"
+        except Exception:  # the summary above is enough to answer
+            pass
+        return text
+
     def _moments_text(self) -> str:
         lines = []
         for item in self.pool:
@@ -317,6 +374,8 @@ class LLMEditor:
             if item.get("ai"):
                 review = item["ai"]
                 line += f" | AI看过：{review['action']}，精彩度 {review['highlight']}/5，{review['note']}"
+            if item.get("outcome"):
+                line += " | 检测：" + {"made": "进球", "missed": "没进"}.get(item["outcome"], "看不出进没进")
             elif item.get("description"):
                 line += f" | 画面：{item['description']}"
             lines.append(line)
@@ -355,7 +414,7 @@ class LLMEditor:
 
     def _system(self) -> dict[str, str]:
         content = SYSTEM_PROMPT.format(video_name=self.video_name, duration=round(self.session.video_duration, 1),
-                                       moments=self._moments_text(), plan=self._plan_text())
+                                       shooting=self._shooting_text(), moments=self._moments_text(), plan=self._plan_text())
         return {"role": "system", "content": content}
 
     # ---------- the single tool ----------
@@ -370,7 +429,7 @@ class LLMEditor:
                 settings["duration"] = max(5.0, min(60.0, float(args["duration"])))
             except (TypeError, ValueError):
                 notes.append("时长无效，保持原值")
-        if args.get("focus") in {"shots", "all"}:
+        if args.get("focus") in {"made", "shots", "all"}:
             settings["focus"] = args["focus"]
         if "clip_count" in args:
             try:
@@ -413,9 +472,30 @@ class LLMEditor:
         style = normalize_edit_style({**style, **{k: args[k] for k in ("pace", "transition", "captions", "slow_motion", "look", "zoom", "music", "title", "aspect") if k in args}})
         if "music" in args and style["music"] != args["music"]:
             notes.append("没有这首音乐，已保持原声；内置可选热血/律动/轻快")
+        if args.get("order") in ("time", "best_first", "climax"):
+            settings["order"] = args["order"]
+        caps = args.get("segment_captions")
+        if isinstance(caps, dict):
+            plays = self.session._plays(self.session.plan) if self.session.plan else []
+            for key, text in caps.items():
+                try:
+                    n = int(str(key).strip("第段 "))
+                except ValueError:
+                    continue
+                text = re.sub(r"[\x00-\x1f]", "", str(text or "")).strip()[:16]
+                if 1 <= n <= len(plays) and text:
+                    settings.setdefault("captions", {})[plays[n - 1].get("event_id")] = text
+                else:
+                    notes.append(f"没有第 {key} 段，字幕没改")
         return settings, style, notes
 
     def apply(self, args: dict[str, Any]) -> dict[str, Any]:
+        import copy
+        if self.session.plan:
+            self.undo_stack = (getattr(self, "undo_stack", []) + [copy.deepcopy({
+                "settings": self.settings, "plan": self.session.plan, "edit_style": self.session.edit_style,
+                "clip_count": self.session.clip_count, "selected_events": self.session.selected_events,
+                "order": self.session.order, "captions": self.session.captions, "commentary": self.commentary})])[-10:]
         settings, style, notes = self._validated(args)
         lo = settings["start_after"] or 0.0
         hi = settings["end_before"] or float("inf")
@@ -430,6 +510,13 @@ class LLMEditor:
             return lo <= center <= hi and item["moment_id"] not in excluded
 
         candidates = [r for r in (self._apply_review(m) for m in self.pool if eligible(m)) if r]
+        if settings["focus"] == "made":
+            made = [m for m in candidates if m.get("outcome") == "made"]
+            if made:
+                candidates = made
+            else:
+                notes.append("这个范围里没检测到进球，已改用投篮镜头")
+                settings = {**settings, "focus": "shots"}
         if settings["focus"] == "shots":
             shots = [m for m in candidates if (m["ai"]["action"] in SHOT_ACTIONS if m.get("ai") else m["event_type"] in SHOT_LIKE_TYPES)]
             if shots:
@@ -451,6 +538,9 @@ class LLMEditor:
         session = self.session
         session.edit_style = style
         session.clip_count = settings["clip_count"] or None
+        session.excluded, session.time_range = set(), (None, None)   # this editor filters its own pool
+        session.order = settings.get("order")
+        session.captions = dict(settings.get("captions") or {})
         source = session.video_duration or max(float(x["end_time"]) for x in pool) + 2.0
         meta = duration_meta(settings["duration"], source)
         self._stage("RENDERING")
@@ -524,7 +614,10 @@ class LLMEditor:
             return None
         item = dict(item)
         item["final_ranking_score"] = 0.35 * float(item.get("raw_model_score", 0.0)) + 0.65 * (review["highlight"] / 5)
-        item["display_name"] = _review_label(review)
+        # Detector shots already carry a plain name with the result ("跳投 · 进了");
+        # only the vaguer X3D moments take the AI's "疑似…" wording.
+        if item.get("evidence_source") != "LOCAL_DETECTOR":
+            item["display_name"] = _review_label(review)
         return item
 
     def _tool(self, call: Any) -> tuple[dict[str, Any], bool]:
@@ -537,6 +630,10 @@ class LLMEditor:
                 return self.apply(args), True
             if call.function.name == "inspect_moments":
                 return self.inspect(list(args.get("moments") or [])), False
+            if call.function.name == "get_game_stats":
+                return self.game_stats(), False
+            if call.function.name == "undo_edit":
+                return self.undo(), True
             raise ValueError("unknown tool")
         except BudgetExceeded:
             raise
@@ -557,7 +654,7 @@ class LLMEditor:
         kwargs: dict[str, Any] = {"model": self.model, "messages": messages, "max_tokens": max_tokens,
                                   "temperature": 0.2, "extra_body": {"reasoning_effort": effort}}
         if tools:
-            kwargs.update(tools=[EDIT_TOOL, INSPECT_TOOL], tool_choice="auto")
+            kwargs.update(tools=[EDIT_TOOL, INSPECT_TOOL, STATS_TOOL, UNDO_TOOL], tool_choice="auto")
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         began = time.perf_counter()
@@ -570,8 +667,32 @@ class LLMEditor:
         self._save()
         return response.choices[0].message
 
-    def turn(self, text: str, edit_style: dict[str, Any] | None = None) -> dict[str, Any]:
+    def game_stats(self) -> dict[str, Any]:
+        from . import review as review_mod
+        report = review_mod.build(self.video_id, self.pool, float(self.session.video_duration or 0) or 1.0)
+        shots = [{"time": s["clock"], "kind": s["kind"], "result": s["outcome"]} for s in report["shots"]][:60]
+        return {"ok": True, "stats": report["stats"], "notes": report["notes"], "streaks": [x["text"] for x in report["streaks"]],
+                "periods": [{k: p[k] for k in ("label", "attempts", "made", "missed", "fg_pct")} for p in report["periods"]],
+                "shots": shots, "caveat": report["caveat"]}
+
+    def undo(self) -> dict[str, Any]:
+        stack = getattr(self, "undo_stack", [])
+        if not stack:
+            return {"ok": False, "reason": "没有可以撤销的修改"}
+        snap = stack.pop()
+        self.settings, self.commentary = snap["settings"], snap["commentary"]
+        s = self.session
+        s.plan, s.edit_style, s.clip_count, s.selected_events = snap["plan"], snap["edit_style"], snap["clip_count"], snap["selected_events"]
+        s.order, s.captions = snap["order"], snap["captions"]
+        s._write_plan()
+        output = s._render()
+        return {"ok": True, "duration": round(float(output["duration"]), 1), "segments": len(s._plays(s.plan)), "undone": True}
+
+    def turn(self, text: str, edit_style: dict[str, Any] | None = None, selected_segment: int | None = None) -> dict[str, Any]:
         text = (text or "").strip()
+        plays = len(self.session._plays(self.session.plan)) if self.session.plan else 0
+        if selected_segment and 1 <= selected_segment <= plays and text:
+            text = f"（我在页面上点选了第 {selected_segment} 段）{text}"
         if not text:
             return self._result("想怎么剪？比如“来个 20 秒的扣篮集锦”。", changed=False)
         if edit_style is not None:
@@ -620,9 +741,9 @@ class LLMEditor:
     def generate(self, duration: float, focus: str, edit_style: dict[str, Any] | None = None) -> dict[str, Any]:
         """The page's "生成" button: settings come from the form, the model writes commentary."""
         self.settings.update(include=[], exclude=[], clip_count=0, start_after=None, end_before=None)
-        args = {"duration": duration, "focus": "shots" if focus == "shots" else "all", **normalize_edit_style(edit_style)}
+        args = {"duration": duration, "focus": focus if focus in ("made", "shots") else "all", **normalize_edit_style(edit_style)}
         self._stage("AI_LOOKING")
-        shortlist = sorted((m for m in self.pool if not m.get("ai") and (focus != "shots" or m["event_type"] in SHOT_LIKE_TYPES)),
+        shortlist = sorted((m for m in self.pool if not m.get("ai") and (focus == "all" or m["event_type"] in SHOT_LIKE_TYPES)),
                            key=lambda m: float(m.get("raw_model_score", 0.0)), reverse=True)[:8]
         if shortlist:
             try:
@@ -649,7 +770,7 @@ class LLMEditor:
         except Exception:
             self.commentary = ""
         reply = self.commentary or self._template(result)
-        self.history += [{"role": "user", "content": f"生成 {duration:g} 秒{'投篮' if focus == 'shots' else '精彩'}集锦"},
+        self.history += [{"role": "user", "content": f"生成 {duration:g} 秒{ {'made': '进球', 'shots': '投篮'}.get(focus, '精彩') }集锦"},
                          {"role": "assistant", "content": reply}]
         return self._result(reply, changed=True)
 
@@ -681,8 +802,12 @@ class LLMEditor:
             output = {"path": str((self.session.output_dir / "highlights.mp4").relative_to(ROOT)),
                       "duration": plan.get("duration"), "segments": plan["segments"], "edit_style": plan.get("edit_style"),
                       "duration_note": plan.get("duration_note", ""), "commentary": self.commentary}
+        from .edit_ops import suggestions
         return {"reply": reply, "session_id": self.session_id, "mode": "ai", "edit_style": dict(self.session.edit_style),
-                "output": output, "plan": plan, "commentary": self.commentary}
+                "output": output, "plan": plan, "commentary": self.commentary,
+                "suggestions": suggestions(plan, any(m.get("outcome") == "made" for m in self.pool), ai=True,
+                                           can_undo=bool(getattr(self, "undo_stack", []))),
+                "can_undo": bool(getattr(self, "undo_stack", []))}
 
     def _save(self) -> None:
         directory = self.session.output_dir

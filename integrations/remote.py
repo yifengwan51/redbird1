@@ -70,17 +70,20 @@ def access_code() -> str:
 
 def pretty_code() -> str:
     code = access_code()
-    return f"{code[:4]}-{code[4:]}"
+    return f"{code[:4]}-{code[4:]}" if len(code) == 8 else code
 
 
 def _rate_ok(ip: str) -> bool:
+    """8 tries a minute and 30 an hour per address, 30 a minute overall."""
     now = time.monotonic()
+    hour = ip + ":h"
     with _lock:
-        for key in (ip, "*"):
-            _attempts[key] = [t for t in _attempts.get(key, []) if now - t < 60]
-        if len(_attempts[ip]) >= 8 or len(_attempts["*"]) >= 30:
+        for key, window in ((ip, 60), ("*", 60), (hour, 3600)):
+            _attempts[key] = [t for t in _attempts.get(key, []) if now - t < window]
+        if len(_attempts[ip]) >= 8 or len(_attempts["*"]) >= 30 or len(_attempts[hour]) >= 30:
             return False
-        _attempts[ip].append(now); _attempts["*"].append(now)
+        for key in (ip, "*", hour):
+            _attempts[key].append(now)
         return True
 
 

@@ -43,13 +43,63 @@ MoTrack 是一个**给普通用户使用**的本地篮球视频工具：选一�
 - 二维码、口令和“开启/关闭手机访问”只在这台电脑自己的浏览器里显示和操作。
 - 开发模式下所有登录的人都是 VIP，可以用你的 AI 额度。不需要时请在弹窗里点“关闭手机访问”。
 
+## 对外开放与管理员审核
+
+- **所有人都能进入网站**，不用口令。基础剪辑、复盘统计、导出一直免费。
+- **AI 功能**（AI 剪辑师剪辑和对话、AI 复盘）每人免费体验 6 次；用完后要填姓名提交申请，**你在管理页面审核通过后**才能继续用。同一个网络每天最多 30 次免费，防止清 Cookie 刷次数。
+- **管理页面**：`<网站地址>/admin`（页面右上角「🛡 管理」），可以单独「添加到主屏幕」当一个 App 用。在电脑上打开管理页面，扫「📱 用手机随时管理」里的二维码，手机直接登录，不用输口令；「让所有手机退出登录」会换掉二维码。只有这台电脑、或用口令/二维码登录过的手机能打开；别人打开会跳到管理员登录。页面里有：
+  - 公开网址和二维码（只含网址，不含你的管理员登录），可以直接发给别人；
+  - 待审核 / 已通过 / 已拒绝 / 体验中 四个列表，可以通过、拒绝、取消资格、重置次数；每 15 秒自动刷新；
+  - 设置：是否开放给所有人（关掉后恢复成要口令）、每人免费次数、每个网络每天免费次数、访客最多上传几个视频。
+- **访客上传的视频只有上传者自己看得到**，管理员都看得到；访客最多保存 3 个、每个不超过 10 分钟。
+- 管理页面可以开启"有新申请时提醒我"（浏览器桌面通知，页面需要开着）；主页右上角「🛡 管理」上会显示待审核数量。
+- 数据：访客记录 `.secrets/visitors.json`，设置 `.secrets/access_settings.json`（权限 600；只存 Cookie 的哈希）。接口：`GET /api/v1/me`、`POST /api/v1/access/apply`、`/api/v1/admin/*`。
+
+## 页面上的小细节
+
+- **首次打开有 5 步操作指南**（选比赛 → 选风格和时长 → 开始剪辑 → 看进球和复盘 → 一句话修改），会高亮对应的位置；随时点右上角「?」再看。看过一次就不再自动弹出（记在浏览器里）。
+- **记住上次的设置**：风格、时长、横竖屏、内容范围，下次打开自动恢复。
+- **上传和处理时显示还要多久**（根据实际进度估算）；访客上传前会先检查时长，超过 10 分钟直接提示，不浪费流量。
+- **AI 免费次数快用完时提醒**（剩 2 次、1 次时各提示一次）。
+- **主题切换**：右上角 🌓 / ☀️ / 🌙，在跟随系统、浅色、深色之间切换，记在浏览器里；主页、登录页、管理页通用。
+- **横向列表看得出能滑**：比赛列表、精彩瞬间、剪辑结构都有滚动条和两侧渐隐；电脑上有左右箭头，鼠标滚轮可以横向滚；手机上有“左右滑动”提示。片段很多时剪辑结构改为横向滚动，不再挤成一团。
+- **分享链接有预览**：发到微信等应用时显示标题、简介和图标。
+
 ## 两种剪辑方式
 
 ### 基础剪辑（免费）
 
 - 完全在本机运行（PyTorchVideo X3D-XS / Kinetics-400），视频和文字都不会离开电脑。
 - 对话由本地规则理解，支持改时长、改风格、只保留 N 段、找投篮镜头等常用说法。
+- 「只要进球」「进球集锦」只剪检测到的进球（剪辑设置里也有「只要进球」按钮）；一个进球都没检测到时，用投篮镜头代替并说明。
+- 「分析一下这场」「表现怎么样」会回答出手、命中率、进球最多和出手最密集的时段、连续命中，以及分时段数字。AI 剪辑师还能回答“后半段投得怎么样”“哪段时间最好”这类问题。
 - 第一次处理某段视频需要扫描，页面会显示进度；之后复用缓存。
+
+### 投篮与进球识别
+
+- 检测模型：[OpenHoopVision-core](https://github.com/feifeifei85/OpenHoopVision-core) 的 RF-DETR 篮球检测器（面向业余/青少年比赛，识别球、篮筐、"球在筐里"、出手球员）。权重 `models/ohv/rf-detr-basketball.pth`（不进 git），重新下载：`python -c "from integrations.shots import download_model; download_model()"`（会校验 SHA-256）。需要 `rfdetr` 包。
+- 两遍扫描：每秒 5 帧粗扫全片；球靠近篮筐的地方逐帧细扫。显卡有 2.5GB 以上空闲时用显卡，否则用 CPU（约为视频时长的 5 倍）。结果缓存在 `outputs/shots/<video>_rows.json`。
+- 判断规则：锁定篮筐（不会跳到另一端的篮筐），跟踪连续移动的球；球进入篮筐上方区域算一次出手；球的轨迹在篮筐高度处从篮筐里穿过，或连续 2 帧"球在筐里"，算**进了**；篮筐一直在画面里但没有这些信号算**没进**；篮筐看不到算**看不出**。
+- 在固定机位和业余比赛视频上，篮筐出现在 95–100% 的帧里（旧模型 0–15%）。进没进的准确率还没有可靠的标准数据来衡量，详见 `docs/SHOT_DETECTION_VALIDATION.md`。
+
+### 比赛复盘
+
+- 精彩瞬间右上角的「📊 比赛复盘」打开复盘面板：出手 / 进球 / 没进 / 命中率，出手时间线（点一个点跳到原片），要点（出手最密集、进球最多的时段，连续 3 球以上命中或没进），分时段统计，每次出手列表。
+- 时段长度随视频长度自动选择（1 分钟到 10 分钟，大约 4–8 段）。
+- **AI 复盘（VIP）**：大模型只根据上面的统计写 3–4 句教练视角的点评和建议，结果按统计内容缓存在 `outputs/review/`。
+- 「导出复盘报告」下载一个独立的 HTML 文件，可以直接发给教练或队员，手机上也能打开。
+- 接口：`GET /api/v1/videos/{id}/review`、`POST /api/v1/videos/{id}/review/recap`（VIP）、`GET /api/v1/videos/{id}/review/export`。
+
+### 对话改片（两种剪辑方式通用）
+
+- **一句话说好几件事**：“去掉第 2 段，然后最精彩的放最后，第 1 段字幕改成‘开场暴扣’”会一次做完，只渲染一遍。
+- **按段修改**：去掉第 2 段 / 删第二个片段 / 只保留第 1、3 段 / 最后一段不要了 / 第 2 段字幕改成“压哨三分”。
+- **点选片段**：在“剪辑结构”里点一段，再说“去掉这段”“这段字幕改成…”，就指你点的那段。
+- **时间范围**：只要后半段 / 前半场 / 1:30 以后 / 最后 2 分钟 / 全场。
+- **顺序**：最精彩的放最后（压轴）/ 精彩的先放 / 按时间顺序。
+- **撤销**：撤销 / 改回去，最多回退 10 步。
+- **听不懂时**会猜你想说什么（“你是想说：‘去掉第 2 段’吗？”）；对话框上方的建议按钮会随当前集锦变化。
+- 提问（“后半段谁更准？”）不会被当成修改指令。
 
 ### AI 剪辑师（VIP）
 
@@ -121,7 +171,8 @@ HypeCut 只表示“画面/音频变化明显”，不代表识别出了投篮�
 
 ## 运行产物
 
-- `outputs/lightweight/latest_<video>.json`：本地轻量分析缓存
+- `outputs/lightweight/latest_<video>.json`：本地轻量分析缓存（含 `shooting` 投篮统计）
+- `outputs/shots/<video>_rows.json`：检测模型逐帧结果缓存
 - `outputs/lightweight_agent/<session>/highlight_plan.json`：本地 Agent 剪辑计划
 - `outputs/lightweight_agent/<session>/highlights.mp4`：生成的集锦
 - `outputs/lightweight_agent/<session>/tool_trace.json`：工具调用轨迹
@@ -165,7 +216,7 @@ API 配置：
 - 上传接口仅接受 MP4/WebM，单文件上限 200MB。
 - 所有事件都是模型推测，不能当作已确认的比赛事实。
 - 没有人工标注时，Precision、Recall、F1 均为 `UNVERIFIED`。
-- Kinetics-400 的原始 softmax 不是校准后的篮球事件概率，也不验证进球/未进、抢断、篮板、球员或回合。
+- Kinetics-400 的原始 softmax 不是校准后的篮球事件概率。进球/未进由检测模型推断，篮筐看不清时不下结论；抢断、篮板、球员和回合目前都不识别。
 
 ## 测试
 
@@ -173,7 +224,7 @@ API 配置：
 /home/ht/miniforge3/envs/vlm/bin/python3.12 -m unittest discover -s tests -v
 ```
 
-测试覆盖事件 schema、源视频边界、允许工具名单、工具调用上限、session/path 防穿越、明文 HTTP 端点拦截、视觉模型输出校验，多片段集锦的时长、来源边界、慢放回看和剪辑风格校验，聊天指令解析与多轮再剪辑（`tests/test_intent.py`）。`tests/test_render_e2e.py` 用 FFmpeg 合成一段 40 秒视频做真实渲染，校验成片时长误差不超过 0.05 秒；缺少项目内 FFmpeg 时自动跳过。`tests/test_vip_ai.py` 覆盖兑换码、令牌、限流，以及 AI 剪辑师的参数处理（去掉第几段、保留、撤销、非法值）。AI 剪辑师的真实模型测试需要显式开启，会产生少量计费请求：`MOTRACK_LIVE_TESTS=1 MOTRACK_API_BASE_URL=... MOTRACK_ALLOW_INSECURE_HTTP=1 python -m unittest tests.test_vip_ai`。
+测试覆盖事件 schema、源视频边界、允许工具名单、工具调用上限、session/path 防穿越、明文 HTTP 端点拦截、视觉模型输出校验，多片段集锦的时长、来源边界、慢放回看和剪辑风格校验，聊天指令解析与多轮再剪辑（`tests/test_intent.py`），出手分组和进没进规则（`tests/test_shots.py`），复盘统计与导出（`tests/test_review.py`）。`tests/test_render_e2e.py` 用 FFmpeg 合成一段 40 秒视频做真实渲染，校验成片时长误差不超过 0.05 秒；缺少项目内 FFmpeg 时自动跳过。`tests/test_vip_ai.py` 覆盖兑换码、令牌、限流，以及 AI 剪辑师的参数处理（去掉第几段、保留、撤销、非法值）。AI 剪辑师的真实模型测试需要显式开启，会产生少量计费请求：`MOTRACK_LIVE_TESTS=1 MOTRACK_API_BASE_URL=... MOTRACK_ALLOW_INSECURE_HTTP=1 python -m unittest tests.test_vip_ai`。
 
 ## 项目结构
 
@@ -182,10 +233,14 @@ API 配置：
 - `integrations/llm_agent.py`：VIP AI 剪辑师（大模型决策，本地执行）
 - `integrations/vip.py`：VIP 兑换码与令牌（开发模式默认全员 VIP）
 - `integrations/music.py`：内置配乐合成、上传音乐校验、混音
+- `integrations/access.py`：访客 AI 次数、姓名申请、管理员审核
+- `web/frontend/admin.html`、`admin.js`：管理页面
 - `integrations/remote.py`：手机访问（口令、会话、一次性二维码、cloudflared 隧道）
 - `integrations/uploads.py`：上传视频（分片、转码、分析）
 - `web/frontend/manifest.json`、`sw.js`、`login.html`、`icons/`：添加到主屏幕和手机登录
 - `integrations/lightweight.py`：本地 X3D 分析、计划、渲染和轻量 Agent
+- `integrations/shots.py`：篮球检测模型，识别出手和进没进
+- `integrations/review.py`：比赛复盘（时间线、分时段、连续命中、AI 复盘提示词、HTML 导出）
 - `integrations/lightweight_v2.py`：V2 审计视图与 HypeCut/V1/V2 对照
 - `integrations/motrack_agent.py`：视觉事件 schema 校验
 - `motrack_chat_optimized.py`：LLM Agent 对话入口

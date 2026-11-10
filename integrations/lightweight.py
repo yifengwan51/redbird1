@@ -27,6 +27,7 @@ import numpy as np
 import torch
 
 from .security import session_directory
+from . import shots
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "lightweight"
@@ -48,7 +49,7 @@ HYPECUT_FALLBACK_DIRS = {
 }
 EVENT_TYPES = {"shot_attempt", "made_basket", "missed_shot", "pass", "rebound", "steal", "fast_break", "UNKNOWN", "basketball_action_candidate", "dunk", "dribble"}
 ALIASES = {"shot": "shot_attempt", "shoot": "shot_attempt", "投篮": "shot_attempt", "出手": "shot_attempt", "命中": "made_basket", "得分": "made_basket", "扣篮": "dunk", "灌篮": "dunk"}
-ANALYSIS_VERSION = "2.1"
+ANALYSIS_VERSION = "3.6"  # 3.6: made shots ranked by crowd noise, range, streak, kind. 3.5: players numbered, shots attributed. 3.4: 3.4: shot evidence + "needs a look" flag (calls unchanged). 3.3: 3.3: stricter ball-in-basket only; drop check off (it flipped real makes)
 SHOT_LIKE_TYPES = {"shot_attempt", "dunk"}
 BASKETBALL_LABELS = {
     "dunking basketball": ("dunk", "扣篮动作"),
@@ -426,7 +427,7 @@ def _merge_jump_cuts(segments: list[dict[str, Any]], shot_cuts: list[float] | No
         start = min(max(0.0, mid - out / 2.0), max(0.0, source_duration - out))
         ids = prev.get("merged_event_ids") or [prev.get("event_id")]
         if _score_of(seg) > _score_of(prev):  # the stronger play names the clip
-            for key in ("event_id", "event_type", "label", "display_name", "action_label_zh", "raw_model_score"):
+            for key in ("event_id", "event_type", "label", "display_name", "action_label_zh", "outcome", "raw_model_score"):
                 prev[key] = seg.get(key)
         prev.update(start_time=round(start, 3), end_time=round(min(source_duration, start + out), 3),
                     output_duration=round(out, 3), event_center=round(mid, 3),
@@ -592,6 +593,7 @@ def build_montage(
             "label": item.get("display_name") or EVENT_TYPE_ZH.get(item.get("event_type", ""), "篮球动作"),
             "display_name": item.get("display_name") or EVENT_TYPE_ZH.get(item.get("event_type", ""), "篮球动作"),
             "action_label_zh": item.get("action_label_zh"),
+            "outcome": item.get("outcome"),
             "raw_model_score": _score_of(item),
             "verification_status": item.get("verification_status", "MODEL_PREDICTED"),
         })
@@ -854,9 +856,12 @@ def _analyze_locked(video_id: str, progress: Any = None) -> dict[str, Any]:
     runner = get_x3d()
     raw, failures = [], []
     windows = _windows(video_id, info["duration"])
+    # Two passes share one progress bar: X3D windows ~35%, detector frames ~65%.
+    use_detector = shots.available()
+    x3d_share = 35 if use_detector else 100
     for number, (start, sampling, segment) in enumerate(windows):
         if progress and number % 4 == 0:
-            progress(number, len(windows))
+            progress(round(x3d_share * number / max(1, len(windows))), 100)
         try:
             frames, times = _frames(video, start)
             top = runner.classify(frames)
@@ -865,12 +870,49 @@ def _analyze_locked(video_id: str, progress: Any = None) -> dict[str, Any]:
                 raw.append(event)
         except Exception as exc:
             failures.append({"start_time": start, "error": type(exc).__name__})
-    elapsed = time.perf_counter() - started
+    x3d_seconds = time.perf_counter() - started
     events = _merge(raw)
+    shot_list: list[dict[str, Any]] = []
+    roster: dict[str, Any] = {"players": [], "teams": False}
+    detector_error = None
+    if use_detector:
+        try:
+            rows = shots.scan(video_id, video, fingerprint,
+                              progress=(lambda d, t: progress(x3d_share + round((100 - x3d_share) * d / max(1, t)), 100)) if progress else None)
+            shot_list = shots.shot_events(video_id, rows, str(video.relative_to(ROOT)))
+            try:
+                from integrations import players as players_mod
+                roster = players_mod.analyse(rows)
+                for e in shot_list:
+                    who = roster["by_attempt"].get(f"{e['peak_time']:.2f}")
+                    if who:
+                        e["player"], e["team"] = who["player"], who["team"]
+                        e["player_via"] = who["how"]
+                roster.pop("by_attempt", None)
+            except Exception as exc:  # numbering is an extra; shots still stand
+                roster = {"players": [], "teams": False, "error": type(exc).__name__}
+        except Exception as exc:  # the detector is an upgrade; X3D results still stand
+            detector_error = type(exc).__name__
+    if shot_list:
+        # The detector localises shots better than 1.6 s X3D windows: drop X3D
+        # shot/dunk windows that overlap a detected attempt, keep the rest.
+        def near(e: dict[str, Any]) -> bool:
+            return any(float(e["start_time"]) <= s["end_time"] + 0.5 and float(e["end_time"]) >= s["start_time"] - 0.5 for s in shot_list)
+        events = sorted([e for e in events if e["event_type"] not in SHOT_LIKE_TYPES or not near(e)] + shot_list,
+                        key=lambda e: float(e["start_time"]))
+    try:
+        from integrations import highlight
+        highlight.score(events, highlight.loudness(video, FFMPEG))
+    except Exception:  # ranking is an extra; the old scores stand
+        pass
+    elapsed = time.perf_counter() - started
     payload = {
         "schema_version": "1.1", "analysis_version": ANALYSIS_VERSION, "run_id": f"lw-{video_id}-{_now()}", "source_video_id": video_id,
         "source_video": str(video.relative_to(ROOT)), "source_fingerprint": fingerprint, "events": events,
         "event_summary": {kind: sum(1 for event in events if event["event_type"] == kind) for kind in sorted({event["event_type"] for event in events})},
+        "shooting": shots.summary(events) if use_detector else None,
+        "roster": roster,
+        "detector": {"available": use_detector, "error": detector_error, "sample_fps": shots.SAMPLE_FPS, "x3d_seconds": round(x3d_seconds, 3)},
         "hypecut_only_baseline": {"candidate_count": len(_hype_segments(video_id)), "segments": _hype_segments(video_id)},
         "performance": {"device": str(runner.device), "model_load_seconds": runner.load_seconds, "gpu_memory_model_bytes": runner.memory_bytes,
                         "inference_total_seconds": round(elapsed, 3), "seconds_per_video_minute": round(elapsed / (info["duration"] / 60), 3),
@@ -887,6 +929,12 @@ def _analyze_locked(video_id: str, progress: Any = None) -> dict[str, Any]:
 
 
 def events(video_id: str, analyze_if_missing: bool = False, progress: Any = None) -> list[dict[str, Any]]:
+    """Analysed events with the user's 复盘 corrections applied."""
+    from integrations import corrections
+    return corrections.apply(video_id, _raw_events(video_id, analyze_if_missing, progress))
+
+
+def _raw_events(video_id: str, analyze_if_missing: bool = False, progress: Any = None) -> list[dict[str, Any]]:
     if video_id not in VIDEO_IDS:
         raise ValueError("unknown video id")
     latest = OUT / f"latest_{video_id}.json"
@@ -1356,7 +1404,27 @@ SCORING_WORDS =("投篮", "出手", "shot", "shoot", "扣篮", "灌篮", "得分
 OUTCOME_QUESTION = re.compile(r"(进了吗|进没进|有没有进|是否(命中|进球|得分)|命中了吗|命中率|中了吗|投进了?(几|多少)|进了(几|多少)|made\?)")
 HELP_WORDS = ("帮助", "怎么用", "能做什么", "功能", "使用说明")
 SEARCH_WORDS = ("找出", "查找", "搜索", "查看", "关键事件", "有哪些", "列出")
-RECAP_WORDS = ("解释", "复盘", "分析", "说明", "总结")
+RECAP_WORDS = ("解释", "复盘", "分析", "说明", "总结", "表现", "投得怎么样", "哪段时间", "什么时候")
+PLAYER_RE = re.compile(r"(?<![第\d])(\d{1,2})\s*号(?:球员|选手|队员)?")
+ALL_PLAYERS_WORDS = ("所有人", "全部球员", "全队", "不限球员", "取消只看", "所有球员", "大家的")
+
+
+def player_from_text(text: str) -> int | None:
+    m = PLAYER_RE.search(text or "")
+    return int(m.group(1)) if m else None
+
+
+def roster(video_id: str) -> dict[str, Any]:
+    """Players numbered by the last analysis (empty if not analysed or no people found)."""
+    cached = _fresh_cache(video_id) if video_id in VIDEO_IDS else None
+    r = (cached or {}).get("roster") or {}
+    from integrations import players as players_mod
+    if not players_mod.ENABLED or not r.get("reliable"):   # edited / crowded footage: do not show numbers users cannot trust
+        return {"players": [], "teams": False}
+    return r
+
+
+MADE_WORDS = ("只要进球", "只剪进球", "只留进球", "进球集锦", "进球的", "进了的", "命中的", "投进的", "只要进的", "made")
 EXPORT_WORDS = ("导出", "下载", "保存")
 LENGTHEN_WORDS = ("延长", "加长", "拉长", "长一点", "长一些")
 SHORTEN_WORDS = ("缩短", "再短", "短一点", "短一些", "压缩")
@@ -1381,6 +1449,9 @@ class Intent:
     clip_count: int | None = None
     scoring: bool = False
     style_change: bool = False
+    made_only: bool = False
+    player: int | None = None
+    all_players: bool = False
 
 
 def parse_intent(message: str, has_plan: bool) -> Intent:
@@ -1389,7 +1460,11 @@ def parse_intent(message: str, has_plan: bool) -> Intent:
     style_change = mentions_style(text)
     duration = LightweightSession._duration_from_text(text)
     count = LightweightSession._count_from_text(text)
-    common = {"duration": duration, "clip_count": count, "scoring": scoring, "style_change": style_change}
+    made_only = any(word in text for word in MADE_WORDS)
+    player = player_from_text(text)
+    all_players = any(word in text for word in ALL_PLAYERS_WORDS)
+    common = {"duration": duration, "clip_count": count, "scoring": scoring or made_only or player is not None, "style_change": style_change,
+              "made_only": made_only, "player": player, "all_players": all_players}
 
     def has(words: tuple[str, ...]) -> bool:
         return any(word in text for word in words)
@@ -1400,6 +1475,8 @@ def parse_intent(message: str, has_plan: bool) -> Intent:
         return Intent("help", **common)
     if OUTCOME_QUESTION.search(text):
         return Intent("outcome", **common)
+    if made_only or player is not None or all_players:  # "只要进球" / "3号的集锦" / "所有人": cut a new reel
+        return Intent("generate", **common)
 
     longer, shorter = has(LENGTHEN_WORDS), has(SHORTEN_WORDS)
     sets_duration = has(SET_DURATION_WORDS) and duration is not None
@@ -1450,6 +1527,13 @@ class LightweightSession:
     clip_count: int | None = None  # user's "保留 N 段", kept across re-edits
     progress: Any = None  # progress(done, total) during a first-time scan
     stage_hook: Any = None  # stage_hook(name) as the job moves on
+    excluded: set = field(default_factory=set)        # event ids the user removed ("去掉第 2 段")
+    time_range: tuple = (None, None)                  # (start, end) source seconds; None = open
+    order: str | None = None                          # None/"time", "best_first", "climax"
+    captions: dict = field(default_factory=dict)      # event id -> caption text
+    history: list = field(default_factory=list)       # undo snapshots, newest last
+    defer_render: bool = False                        # compound commands render once at the end
+    player: int | None = None                         # "只看 3 号": only this numbered player's shots
 
     def __post_init__(self) -> None:
         if self.video_id not in VIDEO_IDS:
@@ -1486,6 +1570,11 @@ class LightweightSession:
         # treating already-trimmed segments as the only available source.
         self.selected_events = [dict(item) for item in selected]
         source_duration = self.video_duration or (max(float(x["end_time"]) for x in selected) + 2.0)
+        lo, hi = self.time_range
+        filtered = [x for x in selected if x.get("event_id") not in self.excluded
+                    and (lo is None or float(x["end_time"]) > lo) and (hi is None or float(x["start_time"]) < hi)]
+        self.filter_note = "" if filtered else "按你的限制已经没有可用镜头，先用全部候选。"
+        selected = filtered or selected
         meta = duration_meta(target, source_duration)
         target = meta["effective_duration"]
         try:
@@ -1495,6 +1584,12 @@ class LightweightSession:
         clips = build_montage(selected, target, source_duration, style, max_clips=max_clips, shot_cuts=cuts)
         if not clips:
             raise ValueError("没有足够的素材生成高光")
+        from .edit_ops import reorder
+        clips = reorder(clips, self.order)
+        for clip in clips:
+            text = self.captions.get(clip.get("event_id"))
+            if text and not clip.get("replay"):
+                clip["label"] = text
         self.plan = {
             "schema_version": "1.2",
             "source_video_id": self.video_id,
@@ -1574,6 +1669,10 @@ class LightweightSession:
     def _render(self) -> dict[str, Any]:
         if not self.plan:
             raise ValueError("尚无剪辑计划")
+        if self.defer_render:
+            d = float(self.plan.get("target_duration", 0))
+            return {"duration": d, "requested_duration": self.plan.get("requested_duration", d), "effective_duration": d,
+                    "duration_note": self.plan.get("duration_note", ""), "duration_clamped": False, "deferred": True}
         if self.stage_hook:
             self.stage_hook("RENDERING")
         result = render_plan(self.video_id, self.plan, self.output_dir / "highlights.mp4")
@@ -1626,7 +1725,129 @@ class LightweightSession:
             bits.append("时长太短，没加慢动作")
         return "、".join(bits)
 
-    def ask(self, message: str, edit_style: dict[str, Any] | str | None = None) -> dict[str, Any]:
+    # ---------- multi-step chat: undo, segments, ranges, order, compound sentences ----------
+    def _snapshot(self) -> dict[str, Any]:
+        import copy
+        return copy.deepcopy({"plan": self.plan, "edit_style": self.edit_style, "clip_count": self.clip_count,
+                              "selected_events": self.selected_events, "excluded": self.excluded,
+                              "time_range": self.time_range, "order": self.order, "captions": self.captions,
+                              "player": self.player})
+
+    def _fingerprint(self) -> str:
+        if not self.plan:
+            return ""
+        return json.dumps([[c.get("event_id"), c.get("start_time"), c.get("label"), c.get("replay")] for c in self.plan.get("clips", [])]
+                          + [self.plan.get("target_duration"), self.edit_style], ensure_ascii=False, sort_keys=True, default=str)
+
+    def _replan(self) -> dict[str, Any]:
+        meta = {k: self.plan[k] for k in ("requested_duration", "effective_duration", "source_duration", "duration_clamped", "duration_note") if k in self.plan}
+        meta.setdefault("effective_duration", float(self.plan["target_duration"]))
+        meta.setdefault("duration_note", "")
+        return self._rebuild(list(self.selected_events or self.plan.get("clips", [])), meta)
+
+    def _apply_ops(self, ops: Any) -> str:
+        """Change state for one clause's operations; returns what was done (for the reply)."""
+        done: list[str] = []
+        plays = self._plays(self.plan) if self.plan else []
+        if ops.reset:
+            self.excluded, self.time_range, self.order, self.captions = set(), (None, None), None, {}
+            done.append("已清除所有限制")
+        if ops.range is not None:
+            self.time_range = tuple(ops.range)
+            lo, hi = self.time_range
+            done.append("已取消时间范围" if lo is None and hi is None else
+                        f"只用原片 {_clock(lo or 0)}–{_clock(hi) if hi is not None else '结尾'} 的镜头")
+        if ops.keep and plays:
+            keep_ids = {plays[n - 1].get("event_id") for n in ops.keep if n <= len(plays)}
+            self.excluded |= {x.get("event_id") for x in (self.selected_events or []) if x.get("event_id") not in keep_ids}
+            self.clip_count = len(keep_ids)
+            done.append("只保留第 " + "、".join(map(str, ops.keep)) + " 段")
+        if ops.remove and plays:
+            self.excluded |= {plays[n - 1].get("event_id") for n in ops.remove if n <= len(plays)}
+            done.append("去掉了第 " + "、".join(map(str, ops.remove)) + " 段")
+        if ops.order:
+            self.order = ops.order
+            done.append({"time": "按原片时间排", "best_first": "最精彩的放在最前面", "climax": "越往后越精彩，最好的一球压轴"}[ops.order])
+        for n, text in ops.captions.items():
+            if n <= len(plays):
+                self.captions[plays[n - 1].get("event_id")] = text
+                done.append(f"第 {n} 段字幕改成「{text}」")
+        return "，".join(done)
+
+    def ask(self, message: str, edit_style: dict[str, Any] | str | None = None, selected_segment: int | None = None) -> dict[str, Any]:
+        """One chat message: may hold several edits; renders once; supports undo."""
+        from .edit_ops import parse_ops, resolve_pronoun, split_clauses, suggestions
+        text = resolve_pronoun((message or "").strip(), selected_segment)
+        clauses = split_clauses(text)
+        # clauses that only refine a fresh reel ("20秒", "只要进球", "竖屏") join the generate clause
+        merged: list[str] = []
+        for clause in clauses:
+            gen = parse_intent(clause.lower(), has_plan=False).action == "generate"
+            if merged and (gen or parse_intent(merged[-1].lower(), has_plan=False).action == "generate") \
+                    and not parse_ops(clause, 0, float(self.video_duration or 0)).any:
+                merged[-1] = merged[-1] + "，" + clause
+            else:
+                merged.append(clause)
+        clauses = merged
+        before = self._snapshot() if self.plan else None
+        before_fp = self._fingerprint()
+        replies: list[str] = []
+        last: dict[str, Any] = {}
+        changed = False
+        self.ops_set = False
+        try:
+            for index, clause in enumerate(clauses):
+                final = index == len(clauses) - 1
+                plays = len(self._plays(self.plan)) if self.plan else 0
+                ops = parse_ops(clause, plays, float(self.video_duration or 0))
+                if ops.undo:
+                    if not self.history:
+                        replies.append("没有可以撤销的修改了。"); continue
+                    snap = self.history.pop()
+                    for key, value in snap.items():
+                        setattr(self, key, value)
+                    self._write_plan()
+                    self.defer_render = False
+                    output = self._render() if self.plan else None
+                    replies.append("已撤销上一步修改。"); last = {"output": output, "plan": self.plan} if output else {}
+                    before, before_fp = None, self._fingerprint()     # undo itself is not pushed to history
+                    continue
+                self.defer_render = not final
+                if ops.any:
+                    self.ops_set = True
+                    done = self._apply_ops(ops)
+                    if self.plan and not ops.rest:
+                        self._replan()
+                        output = self._render()
+                        last = {"output": output, "plan": self.plan}
+                        note = (" " + self.filter_note) if getattr(self, "filter_note", "") else ""
+                        replies.append((done or "已更新") + "。" + note); changed = True
+                        continue
+                    if done and not self.plan and not ops.rest:
+                        replies.append(done + "，生成集锦时会按这个来。"); continue
+                    if done:
+                        replies.append(done + "。")
+                    clause = ops.rest or clause
+                result = self._ask_one(clause, edit_style if index == 0 else None)
+                replies.append(result.get("reply", ""))
+                last = {k: v for k, v in result.items() if k not in ("reply", "suggestions")}
+                changed = changed or bool(result.get("output"))
+        finally:
+            self.defer_render = False
+        if len(clauses) > 1 and self.plan and last.get("output", {}).get("deferred"):
+            last["output"] = self._render()          # the one real render for a compound message
+        if before is not None and self._fingerprint() != before_fp:
+            self.history = (self.history + [before])[-10:]
+        reply = " ".join(r for r in replies if r).strip() or "好的。"
+        if len(clauses) > 1 and last.get("output"):
+            reply += f"（成片 {float(last['output']['duration']):.1f} 秒）"
+        out = self._save(reply, last)
+        out["suggestions"] = suggestions(self.plan, any(x.get("outcome") == "made" for x in (self.selected_events or [])),
+                                         can_undo=bool(self.history))
+        out["can_undo"] = bool(self.history)
+        return out
+
+    def _ask_one(self, message: str, edit_style: dict[str, Any] | str | None = None) -> dict[str, Any]:
         """Execute a supported local command using state, rather than canned answers."""
         text = message.strip().lower()
         if not text:
@@ -1639,6 +1860,22 @@ class LightweightSession:
             is_hypecut = self.candidate_version == "hypecut"
             intent = parse_intent(text, has_plan=bool(self.plan))
             duration = intent.duration
+            player_note = ""
+            if intent.all_players:
+                self.player = None
+                player_note = " 已改回所有人的集锦。"
+            elif intent.player is not None and not is_hypecut:
+                numbers = [p["number"] for p in roster(self.video_id)["players"]]
+                if intent.player not in numbers:
+                    from integrations import players as players_mod
+                    if not players_mod.ENABLED:
+                        return self._save("按人剪辑（给每个球员编号）还在测试，暂时没有开放。现在可以剪全场集锦或“只要进球”。", {})
+                    if not numbers:
+                        return self._save("这段视频暂时分不清每个球员（比如镜头经常切换，或人太小），还不能按人剪。固定机位拍的整场比赛效果最好。", {})
+                    return self._save(f"没找到 {intent.player} 号。这场认出的出手球员有：" + "、".join(f"{n} 号" for n in numbers)
+                                      + "。号码是系统按出手次数编的，不是球衣号，打开「球员」可以看每个人的照片。", {})
+                self.player = intent.player
+                player_note = f" 只用了 {intent.player} 号的出手。"
 
             if intent.action == "help":
                 return self._save(
@@ -1650,7 +1887,11 @@ class LightweightSession:
                     "• 改成硬切 / 加慢放回看 / 不要字幕\n"
                     "• 加热血配乐 / 换一首 / 电影感 / 复古 / 黑白 / 加特效\n"
                     "• 标题改成“街球之夜”\n"
-                    "• 解释这段高光 / 导出视频\n"
+                    "• 去掉第 2 段 / 只保留第 1、3 段 / 第 2 段字幕改成“压哨三分”\n"
+                    "• 只要后半段 / 1:30 以后 / 最后 2 分钟 / 只要进球\n"
+                    "• 最精彩的放最后 / 按时间顺序 / 撤销\n"
+                    "• 一句话说好几件事：“去掉第 2 段，节奏快一点，改成竖屏”\n"
+                    "• 分析一下这场 / 这场进了几个球 / 导出视频\n"
                     "直接说你想做什么即可。",
                     {},
                 )
@@ -1664,9 +1905,12 @@ class LightweightSession:
             if intent.action == "none":
                 # Do not run a long local scan just to answer an unrelated
                 # message.  Give a useful next step instead.
+                from .edit_ops import did_you_mean
+                close = did_you_mean(message)
+                hint = ("你是想说：" + " / ".join(f"“{x}”" for x in close) + " 吗？") if close else \
+                    "试试说：“生成 20 秒投篮高光”“只要进球”“去掉第 2 段”“只要后半段”。"
                 return self._save(
-                    "我可以帮你生成集锦、找投篮镜头、调整时长、换剪辑风格，或者讲讲这段视频。\n"
-                    "试试说：“生成 20 秒投篮高光”或“做一个 30 秒精彩集锦”。",
+                    "这句我没听懂。" + hint + "\n一句话里可以说好几件事，比如“去掉第 2 段，节奏快一点，最精彩的放最后”。",
                     {},
                 )
 
@@ -1718,20 +1962,42 @@ class LightweightSession:
             self._trace("get_video_info", {"video_id": self.video_id, "candidate_version": self.candidate_version, "events_available": len(items)})
 
             def matching(pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
-                if is_hypecut or not intent.scoring:
+                if self.player is not None and not is_hypecut:
+                    pool = [x for x in pool if x.get("player") == f"p{self.player}"]
+                if is_hypecut or not (intent.scoring or self.player is not None):
                     return list(pool)
-                return [x for x in pool if x["event_type"] in SHOT_LIKE_TYPES]
+                shots_only = [x for x in pool if x["event_type"] in SHOT_LIKE_TYPES]
+                if intent.made_only:
+                    made = [x for x in shots_only if x.get("outcome") == "made"]
+                    return made or shots_only
+                return shots_only
 
             if intent.action == "outcome":
                 shot_items = [x for x in items if x["event_type"] in SHOT_LIKE_TYPES]
+                who = ""
+                if self.player is not None and intent.player is not None:
+                    shot_items = [x for x in shot_items if x.get("player") == f"p{self.player}"]
+                    who = f"{self.player} 号"
                 self.state = "EVENTS_RETRIEVED"
                 self._trace("search_events", {"event_type": "shot_attempt", "count": len(shot_items), "outcome_check": True})
                 if is_hypecut:
                     return self._save("当前的“画面变化”方式只看镜头和声音的起伏，认不出投篮，也判断不了进没进。", {"events": []})
-                return self._save(
-                    f"这段视频里找到 {len(shot_items)} 个疑似投篮/扣篮的镜头，但我只能认出动作，看不出进没进。生成集锦后回看一下就清楚了。",
-                    {"events": shot_items},
-                )
+                stats = shots.summary(shot_items)
+                if not stats["attempts"]:
+                    return self._save(
+                        f"这段视频里找到 {len(shot_items)} 个疑似投篮/扣篮的镜头，但篮筐拍得不够清楚，判断不了进没进。生成集锦后回看一下就清楚了。",
+                        {"events": shot_items},
+                    )
+                made = [x for x in shot_items if x.get("outcome") == "made"]
+                parts = [f"{who}找到 {stats['attempts']} 次出手，能看清结果的：进了 {stats['made']} 个、没进 {stats['missed']} 个"]
+                if stats["fg_pct"] is not None:
+                    parts.append(f"命中率约 {stats['fg_pct']}%")
+                if stats["unknown"]:
+                    parts.append(f"另有 {stats['unknown']} 次篮筐不在画面里，看不出结果")
+                text = "，".join(parts) + "。"
+                if made:
+                    text += " 进球在 " + "、".join(_clock(float(x["start_time"])) for x in made[:6]) + "。"
+                return self._save(text + " 结果是自动识别的，可能有误。", {"events": shot_items, "shooting": stats})
 
             if intent.action == "search":
                 found = matching(items)
@@ -1751,6 +2017,20 @@ class LightweightSession:
                 )
 
             if intent.action == "recap":
+                from . import review as review_mod
+                report = review_mod.build(self.video_id, items, float(self.video_duration or 0) or max(
+                    [float(x["end_time"]) for x in items] or [1.0]))
+                if report["stats"]["attempts"]:
+                    lines = list(report["notes"]) + [x["text"] for x in report["streaks"]]
+                    busy = [p for p in report["periods"] if p["attempts"]]
+                    if len(busy) > 1:
+                        lines.append("分时段：" + "；".join(
+                            f"{p['label']} 出手 {p['attempts']}、进 {p['made']}" for p in busy))
+                    summary = " ".join(lines) + " 点「📊 比赛复盘」可以看时间线和每一次出手。结果是自动识别的，可能有误。"
+                    recap = {"source_video_id": self.video_id, "verification_status": "MODEL_PREDICTED", "summary": summary,
+                             "stats": report["stats"], "periods": report["periods"], "streaks": report["streaks"]}
+                    self._trace("generate_recap", recap)
+                    return self._save(summary, {"recap": recap, "shooting": report["stats"]})
                 if self.plan and self.plan.get("clips"):
                     lines = []
                     for index, clip in enumerate(self.plan["clips"], 1):
@@ -1775,8 +2055,16 @@ class LightweightSession:
                 return self._save(summary, {"recap": recap})
 
             # intent.action == "generate"
+            if not getattr(self, "ops_set", False):
+                self.excluded, self.time_range, self.order, self.captions = set(), (None, None), None, {}
             selected = matching(items)
             fallback_note = ""
+            if intent.made_only and not is_hypecut:
+                made_n = sum(1 for x in selected if x.get("outcome") == "made")
+                if not made_n:
+                    fallback_note = " 这段视频没检测到进球（篮筐不在画面里时判断不了），先用投篮镜头代替。"
+            if not selected and self.player is not None:
+                return self._save(f"{self.player} 号在这段里没有可用的出手镜头。说“所有人”可以改回全场集锦。", {})
             if not selected:
                 if not items:
                     return self._save("这段视频里暂时没认出篮球动作，生成不了集锦，换一段视频试试吧。", {"failure": {"stage": "NO_CANDIDATES", "retryable": True}})
@@ -1804,8 +2092,10 @@ class LightweightSession:
                     + f"。剪辑风格：{self._style_text(plan)}。"
                 )
             if any(word in text for word in ("进球", "得分", "命中")) and not is_hypecut:
-                reply += " 我无法确认是否进球，这里挑的是疑似投篮和扣篮的镜头。"
-            return self._save(reply + note + fallback_note, {"plan": plan, "output": output})
+                made = sum(1 for c in plays if c.get("outcome") == "made")
+                reply += (f" 其中 {made} 段是检测到的进球。" if made else
+                          " 这次没检测到进球（篮筐不在画面里时判断不了），挑的是投篮和扣篮镜头。")
+            return self._save(reply + note + fallback_note + player_note, {"plan": plan, "output": output})
         except Exception as exc:
             failure = {"stage": self.state, "error_type": type(exc).__name__, "message": str(exc), "retryable": isinstance(exc, (RuntimeError, OSError, subprocess.SubprocessError))}
             self._trace("agent_failure", failure)

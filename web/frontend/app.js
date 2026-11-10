@@ -3,7 +3,7 @@
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
   const TOKEN_KEY = 'motrack_vip_token';
-  const API_VERSION = 5;
+  const API_VERSION = 6;
   const DURATIONS = [10, 15, 20, 30, 45, 60];
   const STYLE_KEYS = ['pace', 'transition', 'look', 'zoom', 'music', 'slow_motion'];
   const PRESETS = [
@@ -66,7 +66,9 @@
     if (res.status === 401) { location.href = '/app/login.html'; throw new ApiError('请先登录', 401); }
     if (!res.ok) {
       const d = data.detail;
-      throw new ApiError(typeof d === 'string' ? d : (d && d.message) || '出了点问题，请稍后重试', res.status, d && d.code);
+      const err = new ApiError(typeof d === 'string' ? d : (d && d.message) || '出了点问题，请稍后重试', res.status, d && d.code);
+      if (res.status === 403 && err.code && err.code.startsWith('AI_')) { err.handled = true; accessDenied(err); }
+      throw err;
     }
     return data;
   }
@@ -109,14 +111,23 @@
 
   /* ---------- videos ---------- */
   const UPLOAD_STAGE = { uploading: '上传中', TRANSCODING: '转换格式', ANALYZING: '找精彩镜头' };
+  const etaSeen = {};
+  function eta(v) {
+    const key = v.id + ':' + (v.stage || v.status), p = Number(v.progress) || 0, now = Date.now();
+    const s0 = etaSeen[key] || (etaSeen[key] = { t: now, p });
+    const done = p - s0.p, secs = (now - s0.t) / 1000;
+    if (secs < 8 || done < 2 || p >= 100) return '';
+    const left = secs / done * (100 - p);
+    return left < 50 ? ' · 快好了' : ' · 还要约 ' + Math.ceil(left / 60) + ' 分钟';
+  }
   function renderVideos() {
     const upload = '<button class="vcard upload" id="uploadCard" type="button"><div class="thumb">＋</div>' +
-      '<div><b>上传视频</b><small>从相册选一段比赛</small></div></button>';
+      '<div><b>上传视频</b><small>' + (state.me && !state.me.admin ? '10 分钟以内的比赛' : '从相册选一段比赛') + '</small></div></button>';
     $('#videos').innerHTML = upload + state.videos.map((v) => {
       const del = v.upload ? '<span class="del" data-del="' + esc(v.id) + '" role="button" aria-label="删除" title="删除">×</span>' : '';
       if (v.status && v.status !== 'ready') {
         const failed = v.status === 'failed';
-        const label = failed ? (v.error || '处理失败') : (UPLOAD_STAGE[v.stage] || UPLOAD_STAGE[v.status] || '处理中') + ' ' + (v.progress || 0) + '%';
+        const label = failed ? (v.error || '处理失败') : (UPLOAD_STAGE[v.stage] || UPLOAD_STAGE[v.status] || '处理中') + ' ' + (v.progress || 0) + '%' + eta(v);
         return '<div class="vcard pending' + (failed ? ' failed' : '') + '"><div class="thumb ph"></div><div><b>' + esc(v.name) + '</b><small>' + esc(label) + '</small>' +
           (failed ? '' : '<div class="bar"><i style="width:' + (v.progress || 0) + '%"></i></div>') + '</div>' + (failed ? del : '') + '</div>';
       }
@@ -147,6 +158,15 @@
   async function uploadVideo(file) {
     if (!file) return;
     if (file.size > 1024 * 1024 * 1024) { toast('视频不能超过 1GB', true); return; }
+    if (state.me && !state.me.admin) {
+      const secs = await new Promise((done) => {
+        const v = document.createElement('video'), url = URL.createObjectURL(file);
+        const end = (d) => { URL.revokeObjectURL(url); done(d); };
+        v.preload = 'metadata'; v.onloadedmetadata = () => end(v.duration); v.onerror = () => end(0);
+        setTimeout(() => end(0), 4000); v.src = url;
+      });
+      if (secs > 600) { toast('视频有 ' + Math.round(secs / 60) + ' 分钟，请剪到 10 分钟以内再上传', true); $('#videoFile').value = ''; return; }
+    }
     let uid;
     try {
       const started = await api('/api/v1/uploads', { name: file.name || 'video.mp4', size: file.size });
@@ -322,10 +342,79 @@
     $('#avatar').classList.toggle('vip', ai);
     $('#assistantName').textContent = ai ? 'AI 剪辑师' : '剪辑助手';
     $('#assistantSub').textContent = ai ? '会看画面，随便说' : '一句话告诉我怎么改';
-    $('#suggest').innerHTML = SUGGEST[state.mode].map((t) => '<button type="button">' + esc(t) + '</button>').join('');
+    renderSuggest();
     const pill = $('#vipPill');
     pill.classList.toggle('on', state.vip);
-    pill.innerHTML = state.dev ? '👑 VIP<span class="long"> · 开发模式</span>' : state.vip ? '👑 VIP<span class="long"> 会员</span>' : '👑 <span class="long">开通 </span>VIP';
+    const me = state.me;
+    if (me && state.dev) {
+      pill.classList.toggle('on', me.admin || me.status === 'approved');
+      pill.innerHTML = me.admin ? '🛡<span class="long"> 管理员</span>' : me.status === 'approved' ? '✅<span class="long"> 已认证</span>'
+        : me.status === 'pending' ? '⏳<span class="long"> 审核中</span>' : '✨ ' + (me.left || 0) + '<span class="long"> 次 AI</span>';
+    } else {
+      pill.innerHTML = state.dev ? '👑 VIP<span class="long"> · 开发模式</span>' : state.vip ? '👑 VIP<span class="long"> 会员</span>' : '👑 <span class="long">开通 </span>VIP';
+    }
+    renderQuota();
+  }
+  function renderQuota() {
+    const q = $('#quota'), me = state.me;
+    if (!me || me.admin || me.status === 'approved') { q.classList.add('hidden'); return; }
+    q.classList.remove('hidden'); q.classList.toggle('done', me.status !== 'free' || !me.left);
+    q.innerHTML = me.status === 'pending' ? '⏳ 申请已提交，管理员审核通过后可继续使用 AI 功能'
+      : me.status === 'rejected' ? 'AI 功能申请没有通过，基础剪辑仍可免费使用'
+      : me.left ? 'AI 功能可免费体验 <b>' + me.left + '</b> 次，之后留下姓名审核即可继续使用'
+      : 'AI 免费体验已用完 <button class="link" id="quotaApply" type="button">留下姓名继续使用 →</button>';
+  }
+  let mePoll = 0;
+  async function loadMe() {
+    const before = state.me;
+    try { state.me = await api('/api/v1/me'); } catch (e) { return; }
+    $('#adminBtn').classList.toggle('hidden', !state.me.admin);
+    const n = state.me.pending || 0;
+    $('#adminBadge').textContent = n; $('#adminBadge').classList.toggle('hidden', !n);
+    if (state.me.admin) { clearTimeout(mePoll); mePoll = setTimeout(loadMe, 60000); }
+    const left = state.me.left;
+    if (before && before.left != null && left != null && left < before.left && left > 0 && left <= 2)
+      toast('AI 免费次数还剩 ' + left + ' 次，用完后留下姓名就能继续用');
+    renderMode();
+    if (state.me.status === 'pending') pollApproval();
+  }
+  let approvalTimer = 0;
+  function pollApproval() {
+    clearTimeout(approvalTimer);
+    approvalTimer = setTimeout(async () => {
+      const before = state.me && state.me.status;
+      await loadMe();
+      if (before === 'pending' && state.me && state.me.status === 'approved') {
+        $('#accessDialog').classList.add('hidden');
+        toast('🎉 审核通过了，AI 功能可以继续使用');
+      }
+    }, 20000);
+  }
+  function openAccess(message) {
+    const st = state.me ? state.me.status : 'free';
+    $('#accessApply').classList.toggle('hidden', st === 'pending' || st === 'rejected');
+    $('#accessPending').classList.toggle('hidden', st !== 'pending');
+    $('#accessRejected').classList.toggle('hidden', st !== 'rejected');
+    if (message && st === 'free') $('#accessSub').textContent = message + '。基础剪辑一直免费。';
+    $('#accessPendingText').textContent = '已收到「' + ((state.me && state.me.name) || '') + '」的申请，管理员审核通过后就能继续使用 AI 功能。';
+    $('#accessDialog').classList.remove('hidden');
+    if (st === 'free') setTimeout(() => $('#accessName').focus(), 50);
+  }
+  function accessDenied(err) {
+    if (state.me) state.me.status = err.code === 'AI_PENDING' ? 'pending' : err.code === 'AI_REJECTED' ? 'rejected' : state.me.status;
+    if (state.me && err.code === 'AI_LOGIN_REQUIRED') state.me.left = 0;
+    renderMode(); openAccess(err.message.replace(/[。.]$/, ''));
+  }
+  async function applyAccess() {
+    const name = $('#accessName').value.trim();
+    if (name.length < 2) { toast('请填写姓名（至少 2 个字）', true); $('#accessName').focus(); return; }
+    $('#accessSend').disabled = true;
+    try {
+      state.me = Object.assign(state.me || {}, await api('/api/v1/access/apply', { name, note: $('#accessNote').value.trim() }));
+      renderMode(); openAccess();
+      if (state.me.status === 'pending') pollApproval();
+    } catch (e) { toast(e.message, true); }
+    finally { $('#accessSend').disabled = false; }
   }
   function setMode(mode) {
     if (mode === state.mode || state.busy) return;
@@ -334,6 +423,8 @@
     renderMode(); resetChat(); loadMoments();
   }
   function openVip() {
+    if (state.dev && state.me && !state.me.admin) { openAccess(); return; }
+    if (state.dev && state.me && state.me.admin) { location.href = '/admin'; return; }
     if (state.vip) { toast(state.dev ? '开发模式下所有人都是 VIP，直接用 AI 剪辑师吧' : '你已经是 VIP 会员'); return; }
     $('#vipDialog').classList.remove('hidden');
     setTimeout(() => $('#vipCode').focus(), 50);
@@ -383,7 +474,8 @@
       const data = await api('/api/v1/videos/' + video.id + '/events?mode=' + state.mode);
       if (video !== state.video) return;
       state.events = Array.isArray(data.events) ? data.events : [];
-    } catch (e) { state.events = []; }
+      state.shooting = data.shooting || null;
+    } catch (e) { state.events = []; state.shooting = null; }
     renderMoments();
   }
   function momentScore(e) {
@@ -397,6 +489,14 @@
     const reviewed = state.events.filter((e) => e.ai).length;
     $('#momentsNote').textContent = !top.length ? '点一下在原片里看'
       : (reviewed ? 'AI 看过 ' + reviewed + ' 个 · ' : '') + '共 ' + pool.length + ' 个，点一下在原片里看';
+    const sh = state.shooting;
+    const stats = $('#shootStats');
+    if (sh && sh.attempts) {
+      stats.innerHTML = '<span><b>' + sh.attempts + '</b>次出手</span><span class="made"><b>' + sh.made + '</b>进球</span>' +
+        '<span><b>' + sh.missed + '</b>没进</span>' + (sh.fg_pct != null ? '<span><b>' + sh.fg_pct + '%</b>命中率</span>' : '') +
+        (sh.unknown ? '<small>另有 ' + sh.unknown + ' 次篮筐不在画面里，看不出进没进</small>' : '');
+      stats.classList.remove('hidden');
+    } else stats.classList.add('hidden');
     if (!top.length) {
       $('#moments').innerHTML = '<div class="none">第一次剪辑时会自动找出精彩瞬间。</div>';
       return;
@@ -405,13 +505,190 @@
       const mid = (Number(e.start_time) + Number(e.end_time || e.start_time)) / 2;
       const s = momentScore(e);
       const stars = s >= 0.6 ? '★★★' : s >= 0.35 ? '★★☆' : '★☆☆';
-      const name = e.ai ? (e.ai.action === '庆祝' ? '庆祝时刻' : e.ai.action === '其他' ? '篮球动作' : '疑似' + e.ai.action) : (e.display_name || '精彩动作');
+      const name = (e.display_name || '精彩动作').replace(/ · (进了|没进)$/, '');
       return '<button class="moment" data-t="' + Number(e.start_time) + '" type="button">' +
         '<div class="pic ph">' + img(frameUrl(mid)) + '<span class="time">' + clock(e.start_time) + '</span>' +
-        (e.ai ? '<span class="ai-tag">AI 看过</span>' : '') + '</div>' +
+        (e.ai ? '<span class="ai-tag">AI 看过</span>' : '') +
+        (e.outcome === 'made' ? '<span class="out-tag made">进球</span>' : e.outcome === 'missed' ? '<span class="out-tag">没进</span>' : '') + '</div>' +
         '<div class="info"><b>' + esc(name) + '</b><span class="stars">' + stars + '</span>' +
         (e.ai && e.ai.note ? '<span class="note">' + esc(e.ai.note) + '</span>' : '') + '</div></button>';
     }).join('');
+  }
+
+  /* ---------- review (复盘) ---------- */
+  function seekSource(t) {
+    if (!state.output) $('#viewToggle').classList.remove('hidden');
+    showView('source'); $('#empty').classList.add('hidden');
+    const v = $('#source'); v.currentTime = Math.max(0, Number(t) - 1); v.play().catch(() => {});
+    $('.player').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  const OUT_ZH = { made: '进了', missed: '没进', unknown: '看不出' };
+  async function openReview() {
+    const video = state.video; if (!video) { toast('先选一场比赛'); return; }
+    $('#reviewSub').textContent = video.name;
+    $('#reviewBody').innerHTML = '<div class="spin"></div>';
+    $('#reviewDialog').classList.remove('hidden');
+    try {
+      const base = '/api/v1/videos/' + encodeURIComponent(video.id);
+      const [r, pl] = await Promise.all([api(base + '/review'), api(base + '/players').catch(() => ({ players: [] }))]);
+      if (video !== state.video) return;
+      r.players = pl.players || []; r.teams = !!pl.teams;
+      state.review = r; renderReview(r);
+    } catch (e) {
+      $('#reviewBody').innerHTML = '<p class="sub">' + esc(e.message) + '</p>';
+    }
+  }
+  function renderReview(r) {
+    const s = r.stats, dur = Math.max(1, r.duration);
+    const tile = (v, k, cls) => '<div class="rv-tile ' + (cls || '') + '"><b>' + esc(String(v)) + '</b><span>' + k + '</span></div>';
+    const dots = r.shots.map((x) => '<button class="rv-dot ' + x.outcome + '" type="button" data-t="' + x.time + '" style="left:calc(10px + (100% - 20px) * ' +
+      (x.time / dur).toFixed(4) + ')" title="' + esc(x.clock + ' ' + x.label) + '" aria-label="' + esc(x.clock + ' ' + x.label) + '"></button>').join('');
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => '<span>' + clock(dur * f) + '</span>').join('');
+    const periods = r.periods.map((p) => '<tr><td>' + esc(p.label) + '</td><td>' + p.attempts + '</td><td class="' + (p.made ? 'made-txt' : '') + '">' + p.made +
+      '</td><td>' + p.missed + '</td><td>' + (p.fg_pct != null ? p.fg_pct + '%' : '—') + '</td></tr>').join('');
+    const shots = r.shots.map((x) => '<button class="rv-shot ' + x.outcome + '" type="button" data-t="' + x.time + '"><time>' + esc(x.clock) + '</time>' +
+      esc(x.label.replace(/ · .*$/, '')) + '<b>' + OUT_ZH[x.outcome] + '</b></button>').join('');
+    const TEAM = ['A 队', 'B 队'];
+    const players = (r.players || []).map((p) => '<button class="rv-player" type="button" data-player="' + p.number + '">' +
+      '<img loading="lazy" alt="" src="/api/v1/videos/' + encodeURIComponent(r.video_id) + '/players/' + p.id + '/photo">' +
+      '<span><b>' + p.number + ' 号</b>' + (r.teams && p.team != null ? '<i>' + TEAM[p.team] + '</i>' : '') +
+      '<small>' + p.attempts + ' 次出手 · 进 ' + p.made + (p.fg_pct != null ? ' · ' + p.fg_pct + '%' : '') + '</small></span></button>').join('');
+    const notes = r.notes.concat(r.streaks.map((x) => x.text)).map((n) => '<li>' + esc(n) + '</li>').join('');
+    const recap = r.recap ? '<div class="rv-recap">' + esc(r.recap) + '</div>'
+      : '<div class="rv-recap"><p class="sub" style="margin:0 0 10px">AI 根据这些数据写一段教练视角的复盘，指出关键时段并给出建议。</p>' +
+        '<button class="go vip" id="recapGo" type="button">👑 生成 AI 复盘</button></div>';
+    $('#reviewBody').innerHTML =
+      '<div class="rv-tiles">' + tile(s.attempts, '出手') + tile(s.made, '进球', 'made') + tile(s.missed, '没进') + tile(s.fg_pct != null ? s.fg_pct + '%' : '—', '命中率') + '</div>' +
+      '<div class="rv-h">出手时间线 · 点一个点看原片</div>' +
+      (r.shots.length ? '<div class="rv-line"><div class="axis"></div>' + dots + '</div><div class="rv-ticks">' + ticks + '</div>' +
+        '<div class="rv-legend"><span><i class="m"></i>进了</span><span><i class="x"></i>没进</span><span><i></i>看不出</span></div>'
+        : '<p class="sub">这段视频没有检测到投篮出手。下面是其他值得回看的时刻：</p><div class="rv-shots">' +
+          r.moments.map((m) => '<button class="rv-shot" type="button" data-t="' + m.time + '"><time>' + esc(m.clock) + '</time>' + esc(m.label) + '</button>').join('') + '</div>') +
+      (players ? '<div class="rv-h">球员 · 点一个人生成他的个人集锦</div><div class="rv-players" data-scroller>' + players + '</div>' +
+        '<p class="fine rv-pnote">号码按出手次数自动编排，不是球衣号。</p>' : '') +
+      '<div class="rv-h">要点</div><ul class="rv-notes">' + notes + '</ul>' +
+      '<div class="rv-h">AI 复盘 <i class="tag vip">VIP</i></div>' + recap +
+      (r.shots.length ? '<div class="rv-h">分时段</div><table class="rv-table"><tr><th>时段</th><th>出手</th><th>进</th><th>没进</th><th>命中率</th></tr>' + periods + '</table>' +
+        '<div class="rv-h">每次出手</div><div class="rv-shots">' + shots + '</div>' : '') +
+      '<div class="rv-foot"><p class="fine">' + esc(r.caveat) + '</p><a class="btn" id="reviewExport" href="/api/v1/videos/' +
+        encodeURIComponent(r.video_id) + '/review/export" download>⬇ 导出复盘报告</a></div>';
+  }
+  async function makeRecap() {
+    if (!state.vip) { openVip(); return; }
+    const r = state.review, btn = $('#recapGo'); if (!r || !btn) return;
+    btn.disabled = true; btn.textContent = 'AI 正在写复盘…';
+    try {
+      const out = await api('/api/v1/videos/' + encodeURIComponent(r.video_id) + '/review/recap', {});
+      r.recap = out.recap; if (state.review === r) renderReview(r);
+    } catch (e) { if (!e.handled) toast(e.message, true); btn.disabled = false; btn.textContent = '👑 生成 AI 复盘'; }
+    finally { loadMe(); }
+  }
+
+  /* ---------- horizontal scrollers ---------- */
+  // Wrap each [data-scroller] row: visible scrollbar, edge fades, arrow buttons
+  // on mouse devices, and the mouse wheel scrolls it sideways.
+  function enhanceScroller(sc) {
+    if (sc.dataset.enhanced) return; sc.dataset.enhanced = '1';
+    const wrap = document.createElement('div'); wrap.className = 'hscroll';
+    sc.parentNode.insertBefore(wrap, sc); wrap.appendChild(sc); sc.classList.add('sc');
+    const mk = (cls, txt, dir) => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'hs-btn ' + cls; b.textContent = txt;
+      b.setAttribute('aria-label', dir < 0 ? '向左' : '向右');
+      b.addEventListener('click', () => sc.scrollBy({ left: dir * Math.max(160, sc.clientWidth * 0.8), behavior: 'smooth' }));
+      wrap.appendChild(b);
+    };
+    mk('l', '‹', -1); mk('r', '›', 1);
+    if (sc.dataset.hint) { const h = document.createElement('p'); h.className = 'hs-hint'; h.textContent = sc.dataset.hint + ' →'; wrap.after(h); }
+    const sync = () => {
+      const max = sc.scrollWidth - sc.clientWidth;
+      wrap.classList.toggle('can-l', sc.scrollLeft > 4);
+      wrap.classList.toggle('can-r', max - sc.scrollLeft > 4);
+    };
+    sc.addEventListener('scroll', sync, { passive: true });
+    sc.addEventListener('wheel', (e) => {
+      const max = sc.scrollWidth - sc.clientWidth;
+      if (max <= 0 || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      const next = Math.max(0, Math.min(max, sc.scrollLeft + e.deltaY));
+      if (next === sc.scrollLeft) return;   // at the end: let the page scroll
+      e.preventDefault(); sc.scrollLeft = next;
+    }, { passive: false });
+    if (window.ResizeObserver) new ResizeObserver(sync).observe(sc);
+    new MutationObserver(() => requestAnimationFrame(sync)).observe(sc, { childList: true });
+    window.addEventListener('resize', sync);
+    sync();
+  }
+  $$('[data-scroller]').forEach(enhanceScroller);
+
+  /* ---------- first-visit guide ---------- */
+  const GUIDE_KEY = 'motrack_guide_v1';
+  function guideSteps() {
+    const ai = state.me && !state.me.admin && state.me.status !== 'approved'
+      ? '切到「AI 剪辑师」会先看画面再挑镜头，可以免费体验 ' + (state.me.free || 6) + ' 次，之后留下姓名，审核通过就能继续用。'
+      : '切到「AI 剪辑师」，它会先看画面再挑镜头，还会写一段解说。';
+    return [
+      { el: '#videos', pane: 'edit', title: '先选一场比赛', text: '点一段示例比赛就能直接试。想剪自己的比赛，点「＋ 上传视频」，从手机相册或电脑里选。' },
+      { el: '#presets', pane: 'edit', title: '选风格和时长', text: '一个风格同时决定配乐、转场和调色。下面再选集锦要多长，竖屏适合发抖音、视频号。' },
+      { el: '#go', pane: 'edit', title: '点「开始剪辑」', text: '基础剪辑几秒出片，全程免费。' + ai },
+      { el: '.moments-card', title: '看进球和复盘', text: '这里列出每次出手，绿色「进球」标签是进了的球，点一下跳到原片。右上角「📊 比赛复盘」看命中率、出手时间线，还能导出报告发给教练。' },
+      { el: () => (getComputedStyle($('.tabs')).display !== 'none' ? $('.tabs [data-pane=chat]') : $('#pane-chat')), title: '一句话修改',
+        text: '剪好后在「对话」里直接说，比如“去掉第 2 段”“改成竖屏”“节奏快一点”。随时点右上角「?」可以再看这份指南。' }
+    ];
+  }
+  let guideAt = 0, guideList = [];
+  function openGuide() {
+    guideList = guideSteps(); guideAt = 0;
+    $('#guide').classList.remove('hidden'); showGuideStep();
+  }
+  function closeGuide() {
+    $('#guide').classList.add('hidden');
+    try { localStorage.setItem(GUIDE_KEY, '1'); } catch (e) { /* private mode */ }
+    if (narrow()) window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  function showGuideStep() {
+    const step = guideList[guideAt];
+    if (step.pane && state.pane !== step.pane) showPane(step.pane);
+    $('#guideStep').textContent = '第 ' + (guideAt + 1) + ' 步，共 ' + guideList.length + ' 步';
+    $('#guideTitle').textContent = step.title; $('#guideText').textContent = step.text;
+    $('#guideDots').innerHTML = guideList.map((_, i) => '<i class="' + (i === guideAt ? 'on' : '') + '"></i>').join('');
+    $('#guideNext').textContent = guideAt === guideList.length - 1 ? '开始使用' : '下一步';
+    const el = typeof step.el === 'function' ? step.el() : $(step.el);
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setTimeout(placeGuide, 350);
+  }
+  function placeGuide() {
+    if ($('#guide').classList.contains('hidden')) return;
+    const step = guideList[guideAt], el = typeof step.el === 'function' ? step.el() : $(step.el);
+    const hole = $('#guideHole'), card = $('#guideCard');
+    const vw = window.innerWidth, vh = window.innerHeight, cw = card.offsetWidth, ch = card.offsetHeight;
+    const r = el && el.getBoundingClientRect();
+    if (!r || !r.width || r.bottom < 0 || r.top > vh) {
+      hole.className = 'guide-hole center'; hole.removeAttribute('style');
+      card.style.left = (vw - cw) / 2 + 'px'; card.style.top = Math.max(16, (vh - ch) / 2) + 'px'; return;
+    }
+    hole.className = 'guide-hole';
+    const pad = 6, top = Math.max(4, r.top - pad), bottom = Math.min(vh - 4, r.bottom + pad);
+    Object.assign(hole.style, { left: Math.max(4, r.left - pad) + 'px', top: top + 'px', width: Math.min(vw - 8, r.width + 2 * pad) + 'px', height: (bottom - top) + 'px' });
+    const below = vh - bottom - 12, above = top - 12;
+    if (below < ch && above < ch && Math.max(r.left, vw - r.right) >= cw + 28) {
+      // tall target (e.g. the chat column): put the card beside it
+      card.style.left = (r.left >= vw - r.right ? r.left - cw - 14 : r.right + 14) + 'px';
+      card.style.top = Math.min(Math.max(12, r.top), vh - ch - 12) + 'px';
+      return;
+    }
+    let y = below >= ch ? bottom + 12 : above >= ch ? top - ch - 12 : (below >= above ? vh - ch - 12 : 12);
+    if (below < ch && above < ch) {
+      // no room either side: shrink the highlight to the part the card leaves visible
+      const keepTop = below >= above;
+      hole.style.top = (keepTop ? top : y + ch + 10) + 'px';
+      hole.style.height = Math.max(40, (keepTop ? y - 10 : bottom) - (keepTop ? top : y + ch + 10)) + 'px';
+    }
+    card.style.top = Math.max(12, Math.min(y, vh - ch - 12)) + 'px';
+    card.style.left = Math.min(Math.max(16, r.left), vw - cw - 16) + 'px';
+  }
+  function maybeGuide() {
+    let seen = false;
+    try { seen = !!localStorage.getItem(GUIDE_KEY); } catch (e) { seen = true; }
+    if (!seen) setTimeout(openGuide, 600);
   }
 
   /* ---------- output ---------- */
@@ -456,7 +733,7 @@
     $('#filmTrack').innerHTML = segs.map((s) => {
       const label = s.replay ? '慢动作' : '第 ' + (++n) + ' 段';
       const at = Number(s.source_start) + Math.min(1, (Number(s.source_end) - Number(s.source_start)) / 2);
-      return '<button class="seg-item ph" data-out="' + Number(s.output_start) + '" type="button" ' +
+      return '<button class="seg-item ph" data-out="' + Number(s.output_start) + '"' + (s.replay ? '' : ' data-n="' + n + '"') + ' type="button" ' +
         'title="' + esc((s.label || '') + ' · 原片 ' + clock(s.source_start)) + '" ' +
         'style="flex-grow:' + Math.max(0.5, Number(s.output_duration) || 1) + '">' + img(frameUrl(at)) +
         '<span>' + label + '</span></button>';
@@ -474,15 +751,29 @@
     }
     throw new ApiError('等待时间太长了，请稍后重试', 504);
   }
+  const PREFS_KEY = 'motrack_prefs';
+  function savePrefs() {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ preset: state.preset, duration: state.duration, aspect: segValue('aspect'), focus: segValue('focus') })); }
+    catch (e) { /* private mode */ }
+  }
+  function restorePrefs() {
+    let p = null;
+    try { p = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null'); } catch (e) { return; }
+    if (!p) return;
+    if (PRESETS.some((x) => x.id === p.preset)) applyPreset(p.preset);
+    if (DURATIONS.includes(p.duration)) state.duration = p.duration;
+    if (['16:9', '9:16'].includes(p.aspect)) setSeg('aspect', p.aspect);
+    if (['made', 'shots', 'all'].includes(p.focus)) setSeg('focus', p.focus);
+  }
   async function generate() {
     if (state.busy || !state.video) return;
-    stopPreview(); setBusy(true); renderSteps(); working('QUEUED');
+    stopPreview(); savePrefs(); setBusy(true); renderSteps(); working('QUEUED');
     if (narrow()) $('.player').scrollIntoView({ behavior: 'smooth', block: 'start' });
     try {
-      const shots = segValue('focus') === 'shots';
+      const shots = segValue('focus') !== 'all';
       const submitted = await api('/api/v1/highlights', {
         video_id: state.video.id, mode: state.mode, target_duration: state.duration,
-        event_types: shots ? ['shot_attempt'] : ['basketball_action_candidate', 'dunk', 'dribble'],
+        event_types: segValue('focus') === 'made' ? ['shot_attempt', 'made_basket'] : shots ? ['shot_attempt'] : ['basketball_action_candidate', 'dunk', 'dribble'],
         edit_style: editStyle()
       });
       const job = await pollJob(submitted.id);
@@ -498,9 +789,9 @@
       toast(out.duration_note || '集锦剪好了 🎉 可以播放、下载，或者在对话里继续改');
       loadMoments();
     } catch (e) {
-      if (e.code === 'VIP_REQUIRED') { lostVip(); openVip(); } else toast(e.message, true);
+      if (e.code === 'VIP_REQUIRED') { lostVip(); openVip(); } else if (!e.handled) toast(e.message, true);
     } finally {
-      working(null); setBusy(false); renderSteps();
+      working(null); setBusy(false); renderSteps(); if (state.mode === 'ai') loadMe();
     }
   }
 
@@ -513,8 +804,18 @@
     $('#log').appendChild(el); scrollLog();
     return el;
   }
+  function renderSuggest(list) {
+    const items = Array.isArray(list) && list.length ? list : SUGGEST[state.mode];
+    $('#suggest').innerHTML = items.map((t) => '<button type="button">' + esc(t) + '</button>').join('');
+  }
+  function selectSegment(n) {
+    state.selected = n || null;
+    $$('#filmTrack .seg-item').forEach((b) => b.classList.toggle('picked', !!n && Number(b.dataset.n) === n));
+    $('#selChip').classList.toggle('hidden', !n);
+    if (n) $('#selText').textContent = '已选第 ' + n + ' 段，可以说“去掉这段”“这段字幕改成…”';
+  }
   function resetChat() {
-    state.sessionId = '';
+    state.sessionId = ''; selectSegment(null); renderSuggest();
     $('#log').innerHTML = '';
     addMsg('agent', state.mode === 'ai'
       ? '嗨，我是你的 AI 剪辑师 👑 我会先看画面再挑镜头。\n先点“开始剪辑”，或者直接告诉我想要什么，比如“来个 20 秒竖屏扣篮集锦”。'
@@ -533,9 +834,11 @@
     try {
       const r = await api('/api/v1/chat', {
         message: text, session_id: state.sessionId || undefined, video_id: state.video.id,
-        mode: state.mode, edit_style: editStyle()
+        mode: state.mode, edit_style: editStyle(), selected_segment: state.selected || undefined
       });
       typing.remove();
+      renderSuggest(r.suggestions);
+      if (r.output) selectSegment(null);
       state.sessionId = r.session_id || state.sessionId;
       applyStyle(r.edit_style);
       addMsg('agent', r.reply || '好了。', r.output ? '<br><button class="play" type="button" data-play="1">▶ 看新版本</button>' : '');
@@ -547,9 +850,9 @@
     } catch (e) {
       typing.remove();
       if (e.code === 'VIP_REQUIRED') { lostVip(); openVip(); addMsg('system', 'AI 剪辑师需要 VIP，已切回基础剪辑。'); }
-      else addMsg('system', e.message);
+      else addMsg('system', e.handled ? e.message + '（基础剪辑仍可免费使用）' : e.message);
     } finally {
-      clearTimeout(slow); working(null); setBusy(false);
+      clearTimeout(slow); working(null); setBusy(false); if (state.mode === 'ai') loadMe();
     }
   }
   /* ---------- share / save to album ---------- */
@@ -755,13 +1058,21 @@
   $$('#viewToggle button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
   $('#moments').addEventListener('click', (e) => {
     const b = e.target.closest('.moment'); if (!b) return;
-    if (!state.output) $('#viewToggle').classList.remove('hidden');
-    showView('source'); $('#empty').classList.add('hidden');
-    const v = $('#source'); v.currentTime = Math.max(0, Number(b.dataset.t) - 1); v.play().catch(() => {});
-    $('.player').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    seekSource(b.dataset.t);
+  });
+  $('#reviewBtn').addEventListener('click', openReview);
+  $('#reviewClose').addEventListener('click', () => $('#reviewDialog').classList.add('hidden'));
+  $('#reviewDialog').addEventListener('click', (e) => {
+    if (e.target.id === 'reviewDialog') { $('#reviewDialog').classList.add('hidden'); return; }
+    if (e.target.closest('#recapGo')) { makeRecap(); return; }
+    const pl = e.target.closest('[data-player]');
+    if (pl) { $('#reviewDialog').classList.add('hidden'); send('只看' + pl.dataset.player + '号的集锦'); return; }
+    const b = e.target.closest('[data-t]'); if (!b) return;
+    $('#reviewDialog').classList.add('hidden'); seekSource(b.dataset.t);
   });
   $('#filmTrack').addEventListener('click', (e) => {
     const b = e.target.closest('.seg-item'); if (!b) return;
+    if (b.dataset.n) selectSegment(Number(b.dataset.n) === state.selected ? null : Number(b.dataset.n));
     showView('highlight');
     const v = $('#highlight'); v.currentTime = Number(b.dataset.out) + 0.05; v.play().catch(() => {});
   });
@@ -781,16 +1092,27 @@
   });
   $('#msg').addEventListener('input', () => { const t = $('#msg'); t.style.height = 'auto'; t.style.height = Math.min(110, t.scrollHeight) + 'px'; });
   $('#vipPill').addEventListener('click', openVip);
+  $('#helpBtn').addEventListener('click', openGuide);
+  $('#guideSkip').addEventListener('click', closeGuide);
+  $('#guideNext').addEventListener('click', () => { if (guideAt >= guideList.length - 1) closeGuide(); else { guideAt++; showGuideStep(); } });
+  window.addEventListener('resize', placeGuide);
+  $('#selClear').addEventListener('click', () => selectSegment(null));
+  $('#accessClose').addEventListener('click', () => $('#accessDialog').classList.add('hidden'));
+  $('#accessDialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) $('#accessDialog').classList.add('hidden'); });
+  $('#accessSend').addEventListener('click', applyAccess);
+  $('#accessName').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) applyAccess(); });
+  $('#quota').addEventListener('click', (e) => { if (e.target.closest('#quotaApply')) openAccess(); });
   $('#vipClose').addEventListener('click', closeVip);
   $('#vipDialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeVip(); });
   $('#vipActivate').addEventListener('click', activate);
   $('#vipCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') activate(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeVip(); $('#phoneDialog').classList.add('hidden'); $('#installDialog').classList.add('hidden'); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeVip(); $('#phoneDialog').classList.add('hidden'); $('#installDialog').classList.add('hidden'); $('#reviewDialog').classList.add('hidden'); $('#accessDialog').classList.add('hidden'); if (!$('#guide').classList.contains('hidden')) closeGuide(); } });
 
   (async function init() {
     applyPreset('hype'); renderMode(); resetChat(); renderSteps();
-    await Promise.all([checkBackend(), checkVip(), loadMusic()]);
-    applyPreset('hype'); renderMode(); resetChat(); installUI(); checkPhone();
+    await Promise.all([checkBackend(), checkVip(), loadMusic(), loadMe()]);
+    applyPreset('hype'); restorePrefs(); renderDurations(); renderMode(); resetChat(); installUI(); checkPhone();
     await loadVideos();
+    maybeGuide();
   })();
 })();

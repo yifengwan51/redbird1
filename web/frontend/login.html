@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#070a12">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="MoTrack">
 <link rel="manifest" href="/app/manifest.json">
 <link rel="apple-touch-icon" href="/app/icons/apple-touch-icon.png">
 <link rel="icon" href="/app/icons/icon-192.png">
+<script src="/app/theme.js"></script>
 <title>登录 MoTrack</title>
 <link rel="stylesheet" href="/app/app.css">
 <style>
@@ -23,16 +24,18 @@
   .code:focus{border-color:var(--accent)}
   .login-card .go{margin-top:12px}
   .err{min-height:20px;margin-top:10px;color:var(--red);font-size:13px}
+  .login-theme{position:fixed;top:14px;right:14px}
   .login-card small{display:block;margin-top:6px;color:var(--dim);line-height:1.7}
 </style>
 </head>
 <body>
 <main class="login">
+  <button class="theme-btn login-theme" data-theme-toggle type="button">🌓</button>
   <form class="login-card" id="form">
     <img src="/app/icons/icon-192.png" alt="">
     <h1>MoTrack 篮球集锦</h1>
     <p>输入访问口令，在手机上剪集锦</p>
-    <input class="code" id="code" inputmode="text" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="12" placeholder="XXXX-XXXX" aria-label="访问口令">
+    <input class="code" id="code" inputmode="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" maxlength="20" placeholder="输入管理员口令" aria-label="访问口令">
     <button class="go" id="submit" type="submit">进入</button>
     <div class="err" id="err" role="alert"></div>
     <small>口令在电脑上的 MoTrack 页面：点右上角「📱 手机用」。<br>也可以直接用手机扫那里的二维码，不用输入。</small>
@@ -42,6 +45,10 @@
 (() => {
   const err = document.getElementById('err');
   if (new URLSearchParams(location.search).has('reset')) err.textContent = '这个二维码已经重置失效了，请扫电脑上的新二维码，或输入口令。';
+  if (new URLSearchParams(location.search).has('admin')) {
+    document.querySelector('h1').textContent = 'MoTrack 管理员登录';
+    document.querySelector('.login-card p').textContent = '管理页面只给网站主人用。输入访问口令进入。';
+  }
   const code = document.getElementById('code');
   code.focus();
   document.getElementById('form').addEventListener('submit', async (e) => {
@@ -54,7 +61,7 @@
       const res = await fetch('/api/v1/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: value }) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '登录失败，请稍后重试');
-      location.replace('/app/index.html');
+      location.replace(new URLSearchParams(location.search).has('admin') ? '/admin' : '/app/index.html');
     } catch (e2) {
       err.textContent = e2.message === 'Failed to fetch' ? '连不上 MoTrack，请确认电脑上的程序还在运行' : e2.message;
       btn.disabled = false; code.select();

@@ -11,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from integrations import remote
+from integrations import access, remote
 
 try:
     from fastapi.testclient import TestClient
@@ -39,11 +39,16 @@ class GateTests(unittest.TestCase):
         self.patch = mock.patch.multiple(remote, SECRETS=self.tmp, CODE_FILE=self.tmp / "code", SESSIONS_FILE=self.tmp / "s.json",
                                          LINK_FILE=self.tmp / "link", STATE_FILE=self.tmp / "cloudflared.json")
         self.patch.start()
+        # these tests cover the closed-site mode (access code for everyone)
+        self.access = mock.patch.multiple(access, SECRETS=self.tmp, VISITORS=self.tmp / "v.json", SETTINGS=self.tmp / "a.json")
+        self.access.start()
+        access.update_settings({"public": False})
         remote._attempts.clear()
         self.client = TestClient(web.app, base_url="http://127.0.0.1:8765")
 
     def tearDown(self):
         self.patch.stop()
+        self.access.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_local_browser_needs_no_login(self):
@@ -58,6 +63,20 @@ class GateTests(unittest.TestCase):
         self.assertEqual((r.status_code, r.headers["location"]), (302, "/app/login.html"))
         self.assertEqual(self.client.get("/app/login.html", headers=PHONE).status_code, 200)
         self.assertEqual(self.client.get("/app/manifest.json", headers=PHONE).status_code, 200)
+
+    def test_fixed_numeric_code(self):
+        remote.CODE_FILE.write_text("222666\n", encoding="utf-8")
+        self.assertEqual(remote.pretty_code(), "222666")
+        self.assertTrue(remote.check_code(" 222 666 ", "1.1.1.1"))
+        self.assertFalse(remote.check_code("222667", "1.1.1.1"))
+
+    def test_hourly_cap_per_address(self):
+        remote.CODE_FILE.write_text("222666\n", encoding="utf-8")
+        with mock.patch.object(remote.time, "monotonic", side_effect=[i * 61.0 for i in range(40)]):
+            for _ in range(30):
+                remote.check_code("000000", "5.5.5.5")
+            with self.assertRaises(PermissionError):
+                remote.check_code("222666", "5.5.5.5")
 
     def test_code_login_sets_session(self):
         self.assertEqual(self.client.post("/api/v1/login", json={"code": "WRONG"}, headers=PHONE).status_code, 400)

@@ -28,6 +28,7 @@ CHUNK = 8 * 1024 * 1024
 MAX_BYTES = 1024 * 1024 * 1024
 MAX_UPLOADS = 30
 MIN_SECONDS, MAX_SECONDS = 3.0, 20 * 60.0
+VISITOR_MAX_SECONDS = 10 * 60.0   # uploads by visitors (not the owner)
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".3gp", ".mkv"}
 _lock = threading.Lock()
 _live: dict[str, dict[str, Any]] = {}      # progress kept in memory, merged over the meta file
@@ -98,7 +99,7 @@ def _title(filename: str) -> str:
     return stem[:30]
 
 
-def start(filename: str, size: int) -> dict[str, Any]:
+def start(filename: str, size: int, owner: str | None = None) -> dict[str, Any]:
     suffix = Path(filename or "").suffix.lower()
     if suffix not in VIDEO_SUFFIXES:
         raise ValueError("请选择视频文件（MP4 / MOV / WebM）")
@@ -108,7 +109,7 @@ def start(filename: str, size: int) -> dict[str, Any]:
         raise ValueError(f"最多保存 {MAX_UPLOADS} 个视频，请先删除一些")
     uid = "u" + uuid.uuid4().hex[:10]
     meta = {"id": uid, "title": _title(filename), "size": int(size), "suffix": suffix, "status": "uploading",
-            "created": datetime.now().isoformat(timespec="seconds"), "created_ts": time.time()}
+            "created": datetime.now().isoformat(timespec="seconds"), "created_ts": time.time(), "owner": owner}
     UPLOADS.mkdir(parents=True, exist_ok=True)
     _raw_path(uid).write_bytes(b"")
     _write(meta)
@@ -163,6 +164,8 @@ def _process(uid: str) -> None:
         seconds = float(probe["format"]["duration"])
         if not MIN_SECONDS <= seconds <= MAX_SECONDS:
             raise ValueError("视频时长需要在 3 秒到 20 分钟之间")
+        if meta.get("owner") and seconds > VISITOR_MAX_SECONDS:
+            raise ValueError("视频时长需要在 10 分钟以内")
         # Rotation metadata is applied by ffmpeg's default autorotate.
         scale = "scale='if(gte(iw,ih),min(1280,iw),-2)':'if(gte(iw,ih),-2,min(1280,ih))'"
         cmd = [str(lw.FFMPEG), "-y", "-v", "error", "-nostats", "-progress", "pipe:1", "-i", str(raw),
@@ -213,6 +216,7 @@ def delete(uid: str) -> None:
     lw.VIDEO_IDS.pop(uid, None)
     for path in (video_path(uid), _raw_path(uid), _meta_path(uid),
                  lw.OUT / f"latest_{uid}.json", lw.OUT / f"shots_{uid}.json",
+                 ROOT / "outputs" / "shots" / f"{uid}_rows.json",
                  ROOT / "outputs" / "ai_inspect" / f"{uid}.json"):
         path.unlink(missing_ok=True)
     for path in lw.OUT.glob(f"lw-{uid}-*.json"):

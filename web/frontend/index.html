@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#070a12">
 <link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23ff8a1f'/%3E%3Cstop offset='1' stop-color='%23ff4d6d'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Ccircle cx='32' cy='32' r='17' fill='none' stroke='%23fff' stroke-width='3'/%3E%3Cpath d='M15 32h34M32 15v34M20 20c8 7 16 7 24 0M20 44c8-7 16-7 24 0' stroke='%23fff' stroke-width='3' fill='none'/%3E%3C/svg%3E">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -12,13 +12,21 @@
 <meta name="apple-mobile-web-app-title" content="MoTrack">
 <link rel="manifest" href="/app/manifest.json">
 <link rel="apple-touch-icon" href="/app/icons/apple-touch-icon.png">
+<script src="/app/theme.js"></script>
 <title>MoTrack 篮球集锦</title>
+<meta name="description" content="上传一段篮球比赛，自动挑出投篮和进球，几秒剪成带配乐的集锦，还能看比赛复盘。">
+<meta property="og:title" content="MoTrack 篮球集锦">
+<meta property="og:description" content="上传比赛视频，自动剪出进球集锦和赛后复盘。">
+<meta property="og:image" content="/app/icons/icon-512.png">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <header class="top">
   <div class="brand"><img id="logo" alt=""><b>MoTrack</b></div>
   <ol class="steps" id="steps"><li>选比赛</li><li>选风格</li><li>开始剪辑</li><li>对话修改</li></ol>
+  <button class="theme-btn" data-theme-toggle type="button">🌓</button>
+  <button class="help-btn" id="helpBtn" type="button" aria-label="使用指南" title="使用指南">?</button>
+  <a class="phone-btn hidden" id="adminBtn" href="/admin">🛡 管理<i class="badge hidden" id="adminBadge"></i></a>
   <button class="phone-btn hidden" id="phoneBtn" type="button">📱 手机用</button>
   <button class="phone-btn hidden" id="installBtn" type="button">📲 安装</button>
   <button class="vip-pill" id="vipPill" type="button">👑 开通 VIP</button>
@@ -28,7 +36,7 @@
 
 <main class="app">
   <section class="stage">
-    <div class="vstrip" id="videos" aria-label="选择比赛"></div>
+    <div class="vstrip" id="videos" aria-label="选择比赛" data-scroller></div>
     <input type="file" id="videoFile" accept="video/*,.mp4,.mov,.m4v,.webm" hidden>
     <div class="player">
       <div class="screen" id="screen">
@@ -54,13 +62,14 @@
       </div>
       <div class="commentary hidden" id="commentary"><div class="label">👑 AI 解说</div><p id="commentaryText"></p></div>
       <div class="film hidden" id="film">
-        <div class="film-head"><span>剪辑结构 · 点一下跳到那一段</span><span id="filmMeta"></span></div>
-        <div class="film-track" id="filmTrack"></div>
+        <div class="film-head"><span>剪辑结构 · 点一段播放，再在对话里说“去掉这段”</span><span id="filmMeta"></span></div>
+        <div class="film-track" id="filmTrack" data-scroller data-hint="左右滑动看全部片段"></div>
       </div>
     </div>
     <div class="moments-card">
-      <div class="row-head"><h3>✨ 精彩瞬间</h3><span id="momentsNote">点一下在原片里看</span></div>
-      <div class="moments" id="moments"></div>
+      <div class="row-head"><h3>✨ 精彩瞬间</h3><span id="momentsNote">点一下在原片里看</span><button class="review-btn" id="reviewBtn" type="button">📊 比赛复盘</button></div>
+      <div class="shoot-stats hidden" id="shootStats"></div>
+      <div class="moments" id="moments" data-scroller data-hint="左右滑动看更多精彩瞬间"></div>
     </div>
   </section>
   <aside class="side">
@@ -76,6 +85,7 @@
             <button class="mode active" data-mode="lightweight" type="button"><b>基础剪辑 <i class="tag free">免费</i></b><span>自动挑镜头，按设置剪好</span></button>
             <button class="mode vip" data-mode="ai" type="button"><b>AI 剪辑师 <i class="tag vip">VIP</i></b><span>看画面挑镜头，写解说</span><i class="lock" id="aiLock">🔒</i></button>
           </div>
+          <div class="quota hidden" id="quota"></div>
         </div>
         <div class="field">
           <div class="label">选一个风格 <small>配乐、转场、调色一次搞定</small></div>
@@ -91,7 +101,7 @@
           <div><div class="label">画幅</div>
             <div class="seg-group" id="aspect"><button class="active" data-value="16:9" type="button">▭ 横屏</button><button data-value="9:16" type="button" title="适合抖音、视频号，画面会跟着动作裁切">▯ 竖屏</button></div></div>
           <div><div class="label">内容</div>
-            <div class="seg-group" id="focus"><button class="active" data-value="shots" type="button">投篮扣篮</button><button data-value="all" type="button">全部精彩</button></div></div>
+            <div class="seg-group" id="focus"><button data-value="made" type="button" title="只放检测到进了的球">只要进球</button><button class="active" data-value="shots" type="button">投篮扣篮</button><button data-value="all" type="button">全部精彩</button></div></div>
         </div>
         <details class="more" id="more">
           <summary>细节调整</summary>
@@ -130,6 +140,7 @@
       </div>
       <div class="pane-body"><div class="log" id="log" aria-live="polite"></div></div>
       <div class="pane-foot">
+        <div class="sel-chip hidden" id="selChip"><span id="selText"></span><button class="x" id="selClear" type="button" aria-label="取消选择">×</button></div>
         <div class="suggest" id="suggest"></div>
         <div class="composer">
           <textarea id="msg" rows="1" maxlength="500" placeholder="比如：去掉第 2 段，节奏再快点"></textarea>
@@ -142,7 +153,7 @@
 
 <footer class="foot">
   基础剪辑全程在你的电脑上完成，视频不会上传。AI 剪辑师会把候选片段的文字信息和少量截图发给 AI 服务，用来挑镜头和写解说，不会上传整段视频。<br>
-  动作是自动识别的，可能有误差；是否进球、是谁投的，请以原片为准。
+  动作和进没进都是自动识别的，可能有误差；篮筐不在画面里时不会判断结果。
 </footer>
 
 <div class="overlay hidden" id="vipDialog" role="dialog" aria-modal="true" aria-labelledby="vipTitle">
@@ -161,6 +172,31 @@
       <button class="go vip" id="vipActivate" type="button">立即开通</button>
     </div>
     <p class="fine">兑换码请联系管理员获取。</p>
+  </div>
+</div>
+<div class="overlay hidden" id="accessDialog" role="dialog" aria-modal="true" aria-labelledby="accessTitle">
+  <div class="dialog access-dialog">
+    <button class="close" id="accessClose" type="button" aria-label="关闭">×</button>
+    <div class="crown">👋</div>
+    <div id="accessApply">
+      <h3 id="accessTitle">继续使用 AI 功能</h3>
+      <p class="sub" id="accessSub">免费体验用完了。留下姓名，管理员审核通过后就能继续用 AI 剪辑师和 AI 复盘。基础剪辑一直免费。</p>
+      <div class="redeem col">
+        <input id="accessName" placeholder="你的姓名" autocomplete="name" maxlength="20">
+        <input id="accessNote" placeholder="备注（选填，比如学校、球队）" autocomplete="off" maxlength="60">
+        <button class="go vip" id="accessSend" type="button">提交申请</button>
+      </div>
+      <p class="fine">姓名只给管理员看，用来审核。</p>
+    </div>
+    <div class="hidden" id="accessPending">
+      <h3>已提交，等待审核</h3>
+      <p class="sub" id="accessPendingText"></p>
+      <p class="fine">通过后这个页面会自动提示，不用刷新。基础剪辑现在就能用。</p>
+    </div>
+    <div class="hidden" id="accessRejected">
+      <h3>申请没有通过</h3>
+      <p class="sub">如有疑问请联系管理员。基础剪辑仍然可以免费使用。</p>
+    </div>
   </div>
 </div>
 <div class="overlay hidden" id="phoneDialog" role="dialog" aria-modal="true" aria-labelledby="phoneTitle">
@@ -191,6 +227,27 @@
     <ol class="install-steps" id="installSteps"></ol>
     <button class="go hidden" id="installCopy" type="button">复制网址</button>
     <p class="fine hidden" id="installNote"></p>
+  </div>
+</div>
+<div class="overlay hidden" id="reviewDialog" role="dialog" aria-modal="true" aria-labelledby="reviewTitle">
+  <div class="dialog review-dialog">
+    <button class="close" id="reviewClose" type="button" aria-label="关闭">×</button>
+    <h3 id="reviewTitle">📊 比赛复盘</h3>
+    <p class="sub" id="reviewSub"></p>
+    <div class="rv-body" id="reviewBody"><div class="spin"></div></div>
+  </div>
+</div>
+<div class="guide hidden" id="guide" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
+  <div class="guide-hole" id="guideHole"></div>
+  <div class="guide-card" id="guideCard">
+    <div class="guide-step" id="guideStep"></div>
+    <h3 id="guideTitle"></h3>
+    <p id="guideText"></p>
+    <div class="guide-dots" id="guideDots"></div>
+    <div class="guide-acts">
+      <button class="link" id="guideSkip" type="button">跳过</button>
+      <button class="go" id="guideNext" type="button">下一步</button>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast" role="status"></div>

@@ -134,10 +134,50 @@ class SessionReEditTests(unittest.TestCase):
         self.session.ask("改成紧凑")
         self.assertEqual(len(self.plays()), 3)
 
-    def test_goal_reel_generates_with_caveat(self):
+    def test_goal_reel_without_detected_makes_says_so(self):
         result = self.session.ask("生成进球集锦")
         self.assertIn("output", result)
-        self.assertIn("无法确认是否进球", result["reply"])
+        self.assertIn("没检测到进球", result["reply"])
+
+    def _with_outcomes(self):
+        """Shots at 3 s and 55 s went in, 40 s missed; detector events count for the stats."""
+        outcome = {3: "made", 40: "missed", 55: "made"}
+        items = []
+        for x in EVENTS:
+            x = dict(x)
+            if x["start_time"] in outcome:
+                x.update(outcome=outcome[x["start_time"]], evidence_source="LOCAL_DETECTOR", shot_kind="jump",
+                         display_name="跳投 · " + ("进了" if outcome[x["start_time"]] == "made" else "没进"))
+            items.append(x)
+        self.session._events = lambda: [dict(x) for x in items]
+
+    def test_made_only_reel_keeps_only_makes(self):
+        self.assertTrue(lw.parse_intent("只要进球", True).made_only)
+        self.assertTrue(lw.parse_intent("帮我剪个进球集锦", False).made_only)
+        self.assertFalse(lw.parse_intent("生成投篮高光", False).made_only)
+        self._with_outcomes()
+        self.session.ask("只要进球的集锦")
+        self.assertEqual({c.get("outcome") for c in self.plays()}, {"made"})
+
+    def test_made_only_without_makes_falls_back_and_says_so(self):
+        reply = self.session.ask("只要进球")["reply"]
+        self.assertTrue(self.plays())
+        self.assertIn("没检测到进球", reply)
+
+    def test_recap_uses_real_shooting_numbers(self):
+        self._with_outcomes()
+        reply = self.session.ask("分析一下这场的表现")["reply"]
+        self.assertIn("出手 3 次", reply)
+        self.assertIn("命中率 67%", reply)
+
+    def test_goal_reel_counts_detected_makes(self):
+        made = [dict(x, outcome="made", display_name="跳投 · 进了") if x["event_type"] == "shot_attempt" else dict(x) for x in EVENTS]
+        self.session._events = lambda: [dict(x) for x in made]
+        result = self.session.ask("生成进球集锦")
+        count = sum(1 for c in self.plays() if c.get("outcome") == "made")
+        self.assertGreater(count, 0)
+        self.assertIn(f"其中 {count} 段是检测到的进球", result["reply"])
+        self.assertNotIn("疑似", result["reply"])
 
     def test_reply_carries_style_so_page_does_not_undo_chat_edit(self):
         # The page sends its toggles with every message.  The reply must carry
