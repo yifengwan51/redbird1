@@ -34,5 +34,9 @@ if [[ "${1:-}" == "--remote" ]]; then
   export MOTRACK_REMOTE=1
   echo "MoTrack: 手机访问已开启，在电脑页面点「📱 手机用」查看二维码和口令。" >&2
 fi
-export MOTRACK_PORT=8765
-exec "$PYTHON" -m uvicorn web.backend.app:app --host 127.0.0.1 --port 8765 --app-dir "$ROOT"
+export MOTRACK_PORT="${MOTRACK_PORT:-8765}"
+if ! [[ "$MOTRACK_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( MOTRACK_PORT > 65535 )); then
+  echo "MoTrack Web: MOTRACK_PORT must be a valid TCP port (1-65535)." >&2
+  exit 2
+fi
+exec "$PYTHON" -m uvicorn web.backend.app:app --host 127.0.0.1 --port "$MOTRACK_PORT" --app-dir "$ROOT"
