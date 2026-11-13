@@ -1,0 +1,7 @@
+# Do not put a credential in this repository.
+#
+# To configure optional live HTADC/DeepSeek features locally, run:
+#   ./bootstrap_motrack.sh --setup-key
+#
+# The command writes the key only to .secrets/htadc_api_key (mode 600), which
+# is ignored by Git. Alternatively export MOTRACK_API_KEY for one process.
